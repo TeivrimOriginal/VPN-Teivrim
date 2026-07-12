@@ -166,49 +166,33 @@ struct ThreadData {
 unsigned __stdcall BackgroundThread(void* param) {
     ThreadData* td = (ThreadData*)param;
     switch (td->action) {
-    case 1: // Start server
-        WriteLog("Starting server...");
-        ShellExecuteW(NULL, L"open", L"C:\\Program Files\\WireGuard\\wireguard.exe",
-            L"/installtunnelservice C:\\WireGuard\\wg0.conf", NULL, SW_HIDE);
-        Sleep(2500);
-        break;
-    case 2: // Stop server
-        WriteLog("Stopping server...");
-        ShellExecuteW(NULL, L"open", L"C:\\Program Files\\WireGuard\\wireguard.exe",
-            L"/uninstalltunnelservice wg0", NULL, SW_HIDE);
-        Sleep(2500);
-        break;
-    case 3: // Level 1
-        WriteLog("Applying Level 1...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 1\"", 15000);
-        break;
-    case 4: // Level 2
-        WriteLog("Applying Level 2...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 2\"", 15000);
-        break;
-    case 5: // Level 3
-        WriteLog("Applying Level 3...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 3\"", 15000);
-        break;
-    case 6: // Kill switch on
-        WriteLog("Kill switch ON...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Enable\"", 10000);
-        break;
-    case 7: // Kill switch off
-        WriteLog("Kill switch OFF...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Disable\"", 10000);
-        break;
-    case 8: // Harden
-        WriteLog("Full hardening...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-harden.ps1'\"", 20000);
-        break;
+    case 1: WriteLog("Starting server...");
+        ExecCmd(L"C:\\Program Files\\WireGuard\\wireguard.exe /installtunnelservice C:\\WireGuard\\wg0.conf", 3000);
+        Sleep(2000); break;
+    case 2: WriteLog("Stopping server...");
+        ExecCmd(L"C:\\Program Files\\WireGuard\\wireguard.exe /uninstalltunnelservice wg0", 3000);
+        Sleep(2000); break;
+    case 3: WriteLog("Level 1...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 1\"", 15000); break;
+    case 4: WriteLog("Level 2...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 2\"", 15000); break;
+    case 5: WriteLog("Level 3...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 3\"", 15000); break;
+    case 6: WriteLog("Kill switch ON...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Enable\"", 10000); break;
+    case 7: WriteLog("Kill switch OFF...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Disable\"", 10000); break;
+    case 8: WriteLog("Full hardening...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-harden.ps1'\"", 20000); break;
     }
-    PostMessage(td->hWnd, WM_USER + 100, 0, td->action);
+    g_refreshing = false;
     delete td;
     return 0;
 }
 
 void RunAsync(int action) {
+    if (g_refreshing) return;
+    g_refreshing = true;
     ThreadData* td = new ThreadData{ action, g_hWnd };
     _beginthreadex(NULL, 0, BackgroundThread, td, 0, NULL);
 }
@@ -445,7 +429,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (wParam == ID_TIMER) DoRefresh();
         return 0;
 
-    case WM_USER + 100: // Background thread done
+    case WM_USER + 100:
         DoRefresh();
         return 0;
 

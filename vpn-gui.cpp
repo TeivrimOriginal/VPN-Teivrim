@@ -5,80 +5,60 @@
 #include <commctrl.h>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <process.h>
 
 #pragma comment(lib, "comctl32.lib")
 
-// Controls
-#define ID_BTN_REFRESH   101
-#define ID_BTN_START     102
-#define ID_BTN_STOP      103
-#define ID_BTN_ADD       104
-#define ID_BTN_LOG       105
-#define ID_LIST_PEER     106
-#define ID_LIST_LOG      107
-#define ID_LBL_STATUS    108
-#define ID_LBL_PORT      109
-#define ID_LBL_KEY       110
-#define ID_LBL_IP        111
-#define ID_TIMER         112
-#define ID_BTN_LVL1      113
-#define ID_BTN_LVL2      114
-#define ID_BTN_LVL3      115
-#define ID_BTN_KS_ON     116
-#define ID_BTN_KS_OFF    117
-#define ID_BTN_LEAK      118
-#define ID_BTN_HARDEN    119
-#define ID_LBL_LVL       120
+// Control IDs
+enum {
+    ID_BTN_REFRESH=101, ID_BTN_START, ID_BTN_STOP, ID_BTN_ADD, ID_BTN_LOG,
+    ID_LIST_PEER, ID_LIST_LOG, ID_LBL_STATUS, ID_LBL_PORT, ID_LBL_KEY,
+    ID_LBL_IP, ID_TIMER, ID_BTN_LVL1, ID_BTN_LVL2, ID_BTN_LVL3,
+    ID_BTN_KS_ON, ID_BTN_KS_OFF, ID_BTN_LEAK, ID_BTN_HARDEN,
+    ID_LBL_LVL, ID_LBL_TRAFFIC, ID_LBL_UPTIME, ID_BTN_REBOOT,
+    ID_BTN_EXPORT, ID_BTN_ABOUT
+};
 
-const wchar_t CLASS_NAME[] = L"WGMon3";
+const wchar_t CLASS_NAME[] = L"WGMon4";
 HINSTANCE g_hInst;
 HWND g_hWnd;
 HWND g_lblStatus, g_lblPort, g_lblKey, g_lblIp, g_lblLevel;
+HWND g_lblTraffic, g_lblUptime;
 HWND g_listPeer, g_listLog;
-HWND g_btnRefresh, g_btnStart, g_btnStop, g_btnAdd, g_btnLog;
-HWND g_btnLvl1, g_btnLvl2, g_btnLvl3;
-HWND g_btnKSOn, g_btnKSOff, g_btnLeak, g_btnHarden;
 HFONT g_hFont, g_hFontBold, g_hFontMono, g_hFontSmall;
 HBRUSH g_hBrushBg;
+HWND g_btnRefresh, g_btnStart, g_btnStop, g_btnAdd, g_btnLog;
+HWND g_btnLvl1, g_btnLvl2, g_btnLvl3;
+HWND g_btnKSOn, g_btnKSOff, g_btnLeak, g_btnHarden, g_btnReboot, g_btnExport;
 bool g_refreshing = false;
 int g_currentLevel = 0;
+wchar_t g_appDir[MAX_PATH];
+DWORD g_startTick = 0;
 
-std::wstring ExecWg(const wchar_t* args) {
-    wchar_t cmd[512];
-    wsprintfW(cmd, L"\"C:\\Program Files\\WireGuard\\wg.exe\" %s", args);
-    HANDLE hR, hW;
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    if (!CreatePipe(&hR, &hW, &sa, 0)) return L"";
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdOutput = hW;
-    si.hStdError = hW;
-    PROCESS_INFORMATION pi = {};
-    BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-    CloseHandle(hW);
-    if (!ok) { CloseHandle(hR); return L""; }
-    std::wstring result;
-    char buf[4096];
-    DWORD n = 0;
-    while (ReadFile(hR, buf, sizeof(buf) - 1, &n, NULL) && n > 0) {
-        buf[n] = 0;
-        int wl = MultiByteToWideChar(CP_UTF8, 0, buf, -1, 0, 0);
-        if (wl > 0) {
-            wchar_t* wb = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, wl * sizeof(wchar_t));
-            if (wb) { MultiByteToWideChar(CP_UTF8, 0, buf, -1, wb, wl); result += wb; HeapFree(GetProcessHeap(), 0, wb); }
-        }
-        n = 0;
+// --- Logging ---
+void WriteLog(const char* msg) {
+    wchar_t path[MAX_PATH];
+    wsprintfW(path, L"%s\\vpn-gui.log", g_appDir);
+    FILE* f = NULL;
+    _wfopen_s(&f, path, L"a");
+    if (f) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] %s\n",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, msg);
+        fclose(f);
     }
-    CloseHandle(hR);
-    WaitForSingleObject(pi.hProcess, 5000);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return result;
 }
 
-std::wstring ExecCmd(const wchar_t* cmdline) {
+void WriteLogW(const wchar_t* msg) {
+    char mb[512] = {};
+    WideCharToMultiByte(CP_UTF8, 0, msg, -1, mb, sizeof(mb), NULL, NULL);
+    WriteLog(mb);
+}
+
+// --- Process execution ---
+std::wstring ExecCmd(const wchar_t* cmdline, DWORD timeoutMs = 5000) {
     HANDLE hR, hW;
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     if (!CreatePipe(&hR, &hW, &sa, 0)) return L"";
@@ -88,7 +68,7 @@ std::wstring ExecCmd(const wchar_t* cmdline) {
     si.wShowWindow = SW_HIDE;
     si.hStdOutput = hW;
     si.hStdError = hW;
-    wchar_t buf[512];
+    wchar_t buf[1024];
     wcscpy_s(buf, cmdline);
     PROCESS_INFORMATION pi = {};
     BOOL ok = CreateProcessW(NULL, buf, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
@@ -102,15 +82,25 @@ std::wstring ExecCmd(const wchar_t* cmdline) {
         int wl = MultiByteToWideChar(CP_UTF8, 0, tmp, -1, 0, 0);
         if (wl > 0) {
             wchar_t* wb = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, wl * sizeof(wchar_t));
-            if (wb) { MultiByteToWideChar(CP_UTF8, 0, tmp, -1, wb, wl); result += wb; HeapFree(GetProcessHeap(), 0, wb); }
+            if (wb) {
+                MultiByteToWideChar(CP_UTF8, 0, tmp, -1, wb, wl);
+                result += wb;
+                HeapFree(GetProcessHeap(), 0, wb);
+            }
         }
         n = 0;
     }
     CloseHandle(hR);
-    WaitForSingleObject(pi.hProcess, 5000);
+    WaitForSingleObject(pi.hProcess, timeoutMs);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     return result;
+}
+
+std::wstring ExecWG(const wchar_t* args) {
+    wchar_t cmd[512];
+    wsprintfW(cmd, L"\"C:\\Program Files\\WireGuard\\wg.exe\" %s", args);
+    return ExecCmd(cmd, 3000);
 }
 
 std::wstring GetLine(const std::wstring& s, const wchar_t* key) {
@@ -124,10 +114,15 @@ std::wstring GetLine(const std::wstring& s, const wchar_t* key) {
     return r;
 }
 
-std::wstring ReadLogFile(int maxLines) {
+// --- File operations ---
+std::wstring ReadLog(int maxLines) {
+    wchar_t path[MAX_PATH];
+    wsprintfW(path, L"%s\\vpn-gui.log", g_appDir);
     FILE* f = NULL;
-    _wfopen_s(&f, L"C:\\WireGuard\\vpn-gui.log", L"rb");
-    if (!f) { _wfopen_s(&f, L"C:\\WireGuard\\vpn-monitor.log", L"rb"); }
+    _wfopen_s(&f, path, L"rb");
+    if (!f) {
+        _wfopen_s(&f, L"C:\\WireGuard\\vpn-monitor.log", L"rb");
+    }
     if (!f) return L"  (no log)";
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
@@ -162,27 +157,70 @@ std::wstring ReadLogFile(int maxLines) {
     return out;
 }
 
-void WriteAppLog(const wchar_t* msg) {
-    FILE* f = NULL;
-    _wfopen_s(&f, L"C:\\WireGuard\\vpn-gui.log", L"a");
-    if (f) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        char mb[256] = {};
-        WideCharToMultiByte(CP_UTF8, 0, msg, -1, mb, sizeof(mb), NULL, NULL);
-        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] %s\n",
-            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, mb);
-        fclose(f);
+// --- Background thread for long operations ---
+struct ThreadData {
+    int action;
+    HWND hWnd;
+};
+
+unsigned __stdcall BackgroundThread(void* param) {
+    ThreadData* td = (ThreadData*)param;
+    switch (td->action) {
+    case 1: // Start server
+        WriteLog("Starting server...");
+        ShellExecuteW(NULL, L"open", L"C:\\Program Files\\WireGuard\\wireguard.exe",
+            L"/installtunnelservice C:\\WireGuard\\wg0.conf", NULL, SW_HIDE);
+        Sleep(2500);
+        break;
+    case 2: // Stop server
+        WriteLog("Stopping server...");
+        ShellExecuteW(NULL, L"open", L"C:\\Program Files\\WireGuard\\wireguard.exe",
+            L"/uninstalltunnelservice wg0", NULL, SW_HIDE);
+        Sleep(2500);
+        break;
+    case 3: // Level 1
+        WriteLog("Applying Level 1...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 1\"", 15000);
+        break;
+    case 4: // Level 2
+        WriteLog("Applying Level 2...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 2\"", 15000);
+        break;
+    case 5: // Level 3
+        WriteLog("Applying Level 3...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 3\"", 15000);
+        break;
+    case 6: // Kill switch on
+        WriteLog("Kill switch ON...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Enable\"", 10000);
+        break;
+    case 7: // Kill switch off
+        WriteLog("Kill switch OFF...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Disable\"", 10000);
+        break;
+    case 8: // Harden
+        WriteLog("Full hardening...");
+        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-harden.ps1'\"", 20000);
+        break;
     }
+    PostMessage(td->hWnd, WM_USER + 100, 0, td->action);
+    delete td;
+    return 0;
 }
 
+void RunAsync(int action) {
+    ThreadData* td = new ThreadData{ action, g_hWnd };
+    _beginthreadex(NULL, 0, BackgroundThread, td, 0, NULL);
+}
+
+// --- Refresh UI ---
 void DoRefresh() {
     if (g_refreshing) return;
     g_refreshing = true;
-
     SendMessage(g_hWnd, WM_SETREDRAW, FALSE, 0);
 
-    std::wstring wg = ExecWg(L"show wg0");
+    // Server status
+    std::wstring wg = ExecWG(L"show wg0");
     bool on = (wg.find(L"listening port") != std::wstring::npos);
     SetWindowTextW(g_lblStatus, on ? L"  ONLINE  " : L"  OFFLINE  ");
 
@@ -197,6 +235,7 @@ void DoRefresh() {
         SetWindowTextW(g_lblKey, L"  Key: ---");
     }
 
+    // IP
     std::wstring ipRaw = ExecCmd(L"cmd.exe /c ipconfig");
     size_t ipPos = ipRaw.find(L"192.168");
     if (ipPos == std::wstring::npos) ipPos = ipRaw.find(L"10.0");
@@ -209,20 +248,36 @@ void DoRefresh() {
     }
     SetWindowTextW(g_lblIp, (L"  LAN: " + lip).c_str());
 
-    // Detect anonymity level
+    // Anonymity level
     bool hasIPv6 = (ipRaw.find(L"IPv6") != std::wstring::npos && ipRaw.find(L"disabled") == std::wstring::npos);
-    std::wstring dnsCheck = ExecCmd(L"cmd.exe /c netsh advfirewall firewall show rule name=all dir=out | findstr /i \"L3-KS\"");
-    bool hasKS = (dnsCheck.find(L"L3-KS") != std::wstring::npos);
-
+    std::wstring ksCheck = ExecCmd(L"cmd.exe /c netsh advfirewall firewall show rule name=all dir=out | findstr /i \"L3-KS\"", 3000);
+    bool hasKS = (ksCheck.find(L"L3-KS") != std::wstring::npos);
     int level = 1;
     if (!hasIPv6) level = 2;
     if (hasKS) level = 3;
     g_currentLevel = level;
-
     wchar_t lvlBuf[128];
-    wsprintfW(lvlBuf, L"  Anonymity: Level %d", level);
+    wsprintfW(lvlBuf, L"  Level %d", level);
     SetWindowTextW(g_lblLevel, lvlBuf);
 
+    // Traffic stats
+    std::wstring transfer = L"---";
+    size_t trPos = wg.find(L"transfer:");
+    if (trPos != std::wstring::npos) {
+        transfer = GetLine(wg, L"transfer: ");
+    }
+    SetWindowTextW(g_lblTraffic, (L"  Traffic: " + transfer).c_str());
+
+    // Uptime
+    DWORD uptime = (GetTickCount() - g_startTick) / 1000;
+    int hours = uptime / 3600;
+    int mins = (uptime % 3600) / 60;
+    int secs = uptime % 60;
+    wchar_t upBuf[64];
+    wsprintfW(upBuf, L"  Uptime: %02d:%02d:%02d", hours, mins, secs);
+    SetWindowTextW(g_lblUptime, upBuf);
+
+    // Peers
     ListView_DeleteAllItems(g_listPeer);
     int idx = 0;
     size_t pp = 0;
@@ -235,7 +290,7 @@ void DoRefresh() {
         std::wstring hs = GetLine(blk, L"latest handshake: ");
         std::wstring tr = GetLine(blk, L"transfer: ");
         if (!key.empty()) {
-            if (key.size() > 20) key = key.substr(0, 20) + L"...";
+            if (key.size() > 22) key = key.substr(0, 22) + L"...";
             LVITEMW li = {};
             li.mask = LVIF_TEXT;
             li.iItem = idx;
@@ -249,7 +304,8 @@ void DoRefresh() {
         pp = pe;
     }
 
-    std::wstring logContent = ReadLogFile(20);
+    // Log
+    std::wstring logContent = ReadLog(20);
     SendMessage(g_listLog, LB_RESETCONTENT, 0, 0);
     size_t lp = 0;
     while (lp < logContent.size()) {
@@ -269,14 +325,7 @@ void DoRefresh() {
     g_refreshing = false;
 }
 
-void RunPS(const wchar_t* script) {
-    wchar_t cmd[512];
-    wsprintfW(cmd, L"powershell.exe -ExecutionPolicy Bypass -NoProfile -File \"%s\"", script);
-    ShellExecuteW(NULL, L"open", L"powershell.exe",
-        cmd + 17, NULL, SW_SHOW);
-}
-
-HWND CreateBtn(HWND parent, const wchar_t* text, int x, int y, int w, int h, int id) {
+HWND MakeBtn(HWND parent, const wchar_t* text, int x, int y, int w, int h, int id) {
     HWND btn = CreateWindowW(L"BUTTON", text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         x, y, w, h, parent, (HMENU)(INT_PTR)id, g_hInst, 0);
@@ -284,176 +333,160 @@ HWND CreateBtn(HWND parent, const wchar_t* text, int x, int y, int w, int h, int
     return btn;
 }
 
+HWND MakeLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h, HFONT font) {
+    HWND lbl = CreateWindowW(L"STATIC", text, WS_CHILD | WS_VISIBLE,
+        x, y, w, h, parent, 0, g_hInst, 0);
+    SendMessage(lbl, WM_SETFONT, (WPARAM)font, 1);
+    return lbl;
+}
+
 void AddControls(HWND hWnd) {
-    g_hBrushBg = CreateSolidBrush(RGB(22, 22, 28));
-    g_hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, L"Segoe UI");
-    g_hFontBold = CreateFontW(20, 0, 0, 0, FW_BOLD, 0, 0, 0, 0, 0, 0, 0, 0, L"Segoe UI");
-    g_hFontMono = CreateFontW(14, 0, 0, 0, FW_NORMAL, 0, 0, 0, FIXED_PITCH, 0, 0, 0, 0, L"Consolas");
-    g_hFontSmall = CreateFontW(13, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, L"Segoe UI");
+    g_hBrushBg = CreateSolidBrush(RGB(18, 18, 24));
+    g_hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, L"Segoe UI");
+    g_hFontBold = CreateFontW(18, 0, 0, 0, FW_BOLD, 0, 0, 0, 0, 0, 0, 0, 0, L"Segoe UI");
+    g_hFontMono = CreateFontW(13, 0, 0, 0, FW_NORMAL, 0, 0, 0, FIXED_PITCH, 0, 0, 0, 0, L"Consolas");
+    g_hFontSmall = CreateFontW(12, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, L"Segoe UI");
 
-    // Title
-    HWND t = CreateWindowW(L"STATIC", L"WireGuard VPN Monitor",
-        WS_CHILD | WS_VISIBLE, 20, 8, 400, 28, hWnd, 0, g_hInst, 0);
-    SendMessage(t, WM_SETFONT, (WPARAM)g_hFontBold, 1);
-
+    // Header
+    MakeLabel(hWnd, L"VPN-TEIVRIM", 16, 6, 200, 28, g_hFontBold);
     g_lblStatus = CreateWindowW(L"STATIC", L"  WAIT  ",
-        WS_CHILD | WS_VISIBLE | SS_CENTER, 550, 6, 120, 30, hWnd, (HMENU)ID_LBL_STATUS, g_hInst, 0);
+        WS_CHILD | WS_VISIBLE | SS_CENTER, 580, 4, 100, 28, hWnd, (HMENU)ID_LBL_STATUS, g_hInst, 0);
     SendMessage(g_lblStatus, WM_SETFONT, (WPARAM)g_hFontBold, 1);
 
-    g_lblLevel = CreateWindowW(L"STATIC", L"  Anonymity: Level ?",
-        WS_CHILD | WS_VISIBLE, 680, 10, 200, 22, hWnd, (HMENU)ID_LBL_LVL, g_hInst, 0);
+    g_lblLevel = CreateWindowW(L"STATIC", L"  Level ?",
+        WS_CHILD | WS_VISIBLE, 690, 8, 100, 20, hWnd, (HMENU)ID_LBL_LVL, g_hInst, 0);
     SendMessage(g_lblLevel, WM_SETFONT, (WPARAM)g_hFontSmall, 1);
 
-    // Separator
-    CreateWindowW(L"STATIC", 0, WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-        20, 42, 860, 2, hWnd, 0, g_hInst, 0);
+    g_lblUptime = CreateWindowW(L"STATIC", L"  Uptime: 00:00:00",
+        WS_CHILD | WS_VISIBLE, 800, 8, 140, 20, hWnd, (HMENU)ID_LBL_UPTIME, g_hInst, 0);
+    SendMessage(g_lblUptime, WM_SETFONT, (WPARAM)g_hFontSmall, 1);
 
-    // Info
-    g_lblPort = CreateWindowW(L"STATIC", L"  Port: ---",
-        WS_CHILD | WS_VISIBLE, 20, 52, 340, 20, hWnd, (HMENU)ID_LBL_PORT, g_hInst, 0);
-    g_lblKey = CreateWindowW(L"STATIC", L"  Key: ---",
-        WS_CHILD | WS_VISIBLE, 20, 74, 500, 20, hWnd, (HMENU)ID_LBL_KEY, g_hInst, 0);
-    g_lblIp = CreateWindowW(L"STATIC", L"  LAN: ---",
-        WS_CHILD | WS_VISIBLE, 520, 52, 250, 20, hWnd, (HMENU)ID_LBL_IP, g_hInst, 0);
-    SendMessage(g_lblPort, WM_SETFONT, (WPARAM)g_hFontMono, 1);
-    SendMessage(g_lblKey, WM_SETFONT, (WPARAM)g_hFontMono, 1);
-    SendMessage(g_lblIp, WM_SETFONT, (WPARAM)g_hFontMono, 1);
+    CreateWindowW(L"STATIC", 0, WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+        16, 36, 920, 2, hWnd, 0, g_hInst, 0);
+
+    // Info row
+    g_lblPort = MakeLabel(hWnd, L"  Port: ---", 16, 44, 300, 18, g_hFontMono);
+    g_lblIp   = MakeLabel(hWnd, L"  LAN: ---", 320, 44, 250, 18, g_hFontMono);
+    g_lblTraffic = CreateWindowW(L"STATIC", L"  Traffic: ---",
+        WS_CHILD | WS_VISIBLE, 580, 44, 340, 18, hWnd, (HMENU)ID_LBL_TRAFFIC, g_hInst, 0);
+    SendMessage(g_lblTraffic, WM_SETFONT, (WPARAM)g_hFontMono, 1);
+    g_lblKey  = MakeLabel(hWnd, L"  Key: ---", 16, 64, 900, 18, g_hFontMono);
 
     // Peers
-    HWND pl = CreateWindowW(L"STATIC", L"  Peers",
-        WS_CHILD | WS_VISIBLE, 20, 100, 200, 20, hWnd, 0, g_hInst, 0);
-    SendMessage(pl, WM_SETFONT, (WPARAM)g_hFontBold, 1);
-
+    MakeLabel(hWnd, L"  Connected Peers", 16, 88, 200, 20, g_hFontBold);
     g_listPeer = CreateWindowExW(LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
         WC_LISTVIEWW, 0,
         WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_NOCOLUMNHEADER,
-        20, 122, 860, 100, hWnd, (HMENU)ID_LIST_PEER, g_hInst, 0);
+        16, 110, 920, 90, hWnd, (HMENU)ID_LIST_PEER, g_hInst, 0);
     SendMessage(g_listPeer, WM_SETFONT, (WPARAM)g_hFontMono, 1);
-    ListView_SetBkColor(g_listPeer, RGB(26, 26, 32));
+    ListView_SetBkColor(g_listPeer, RGB(22, 22, 28));
     ListView_SetTextColor(g_listPeer, RGB(200, 200, 200));
-    LVCOLUMNW c = {};
-    c.mask = LVCF_TEXT | LVCF_WIDTH;
-    c.pszText = (LPWSTR)L"Key"; c.cx = 250; ListView_InsertColumn(g_listPeer, 0, &c);
-    c.pszText = (LPWSTR)L"Endpoint"; c.cx = 200; ListView_InsertColumn(g_listPeer, 1, &c);
-    c.pszText = (LPWSTR)L"Handshake"; c.cx = 200; ListView_InsertColumn(g_listPeer, 2, &c);
-    c.pszText = (LPWSTR)L"Transfer"; c.cx = 200; ListView_InsertColumn(g_listPeer, 3, &c);
+    LVCOLUMNW col = {};
+    col.mask = LVCF_TEXT | LVCF_WIDTH;
+    col.pszText = (LPWSTR)L"Key"; col.cx = 260; ListView_InsertColumn(g_listPeer, 0, &col);
+    col.pszText = (LPWSTR)L"Endpoint"; col.cx = 210; ListView_InsertColumn(g_listPeer, 1, &col);
+    col.pszText = (LPWSTR)L"Handshake"; col.cx = 220; ListView_InsertColumn(g_listPeer, 2, &col);
+    col.pszText = (LPWSTR)L"Transfer"; col.cx = 220; ListView_InsertColumn(g_listPeer, 3, &col);
 
     // Log
-    HWND ll = CreateWindowW(L"STATIC", L"  Log",
-        WS_CHILD | WS_VISIBLE, 20, 230, 200, 20, hWnd, 0, g_hInst, 0);
-    SendMessage(ll, WM_SETFONT, (WPARAM)g_hFontBold, 1);
-
+    MakeLabel(hWnd, L"  Log", 16, 208, 100, 20, g_hFontBold);
     g_listLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", 0,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOSEL,
-        20, 252, 860, 110, hWnd, (HMENU)ID_LIST_LOG, g_hInst, 0);
+        16, 230, 920, 90, hWnd, (HMENU)ID_LIST_LOG, g_hInst, 0);
     SendMessage(g_listLog, WM_SETFONT, (WPARAM)g_hFontMono, 1);
 
-    // Separator
     CreateWindowW(L"STATIC", 0, WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-        20, 372, 860, 2, hWnd, 0, g_hInst, 0);
+        16, 328, 920, 2, hWnd, 0, g_hInst, 0);
 
-    // Server controls
-    HWND sl = CreateWindowW(L"STATIC", L"  Server",
-        WS_CHILD | WS_VISIBLE, 20, 380, 100, 20, hWnd, 0, g_hInst, 0);
-    SendMessage(sl, WM_SETFONT, (WPARAM)g_hFontBold, 1);
+    // Server buttons
+    MakeLabel(hWnd, L"  Server", 16, 336, 100, 18, g_hFontBold);
+    g_btnRefresh = MakeBtn(hWnd, L"Refresh",     16,  356, 85, 28, ID_BTN_REFRESH);
+    g_btnStart   = MakeBtn(hWnd, L"Start",       110, 356, 85, 28, ID_BTN_START);
+    g_btnStop    = MakeBtn(hWnd, L"Stop",        204, 356, 85, 28, ID_BTN_STOP);
+    g_btnAdd     = MakeBtn(hWnd, L"Add Client",  300, 356, 95, 28, ID_BTN_ADD);
+    g_btnLog     = MakeBtn(hWnd, L"Open Log",    404, 356, 95, 28, ID_BTN_LOG);
+    g_btnExport  = MakeBtn(hWnd, L"Export",      508, 356, 85, 28, ID_BTN_EXPORT);
 
-    g_btnRefresh = CreateBtn(hWnd, L"Refresh",     20,  402, 90, 30, ID_BTN_REFRESH);
-    g_btnStart   = CreateBtn(hWnd, L"Start",       120, 402, 90, 30, ID_BTN_START);
-    g_btnStop    = CreateBtn(hWnd, L"Stop",        220, 402, 90, 30, ID_BTN_STOP);
-    g_btnAdd     = CreateBtn(hWnd, L"Add Client",  320, 402, 100, 30, ID_BTN_ADD);
-    g_btnLog     = CreateBtn(hWnd, L"Open Log",    430, 402, 100, 30, ID_BTN_LOG);
-
-    // Anonymity levels
-    HWND al = CreateWindowW(L"STATIC", L"  Anonymity Level",
-        WS_CHILD | WS_VISIBLE, 20, 442, 200, 20, hWnd, 0, g_hInst, 0);
-    SendMessage(al, WM_SETFONT, (WPARAM)g_hFontBold, 1);
-
-    g_btnLvl1 = CreateBtn(hWnd, L"1: Basic VPN",      20,  464, 140, 30, ID_BTN_LVL1);
-    g_btnLvl2 = CreateBtn(hWnd, L"2: + DNS Protect",  170, 464, 150, 30, ID_BTN_LVL2);
-    g_btnLvl3 = CreateBtn(hWnd, L"3: Maximum",        330, 464, 130, 30, ID_BTN_LVL3);
+    // Anonymity
+    MakeLabel(hWnd, L"  Anonymity", 16, 392, 150, 18, g_hFontBold);
+    g_btnLvl1 = MakeBtn(hWnd, L"1: Basic VPN",      16,  412, 130, 28, ID_BTN_LVL1);
+    g_btnLvl2 = MakeBtn(hWnd, L"2: + DNS Shield",   154, 412, 140, 28, ID_BTN_LVL2);
+    g_btnLvl3 = MakeBtn(hWnd, L"3: MAXIMUM",        302, 412, 130, 28, ID_BTN_LVL3);
 
     // Privacy tools
-    HWND pl2 = CreateWindowW(L"STATIC", L"  Privacy Tools",
-        WS_CHILD | WS_VISIBLE, 520, 442, 200, 20, hWnd, 0, g_hInst, 0);
-    SendMessage(pl2, WM_SETFONT, (WPARAM)g_hFontBold, 1);
-
-    g_btnKSOn   = CreateBtn(hWnd, L"Kill Switch ON",   520, 464, 130, 30, ID_BTN_KS_ON);
-    g_btnKSOff  = CreateBtn(hWnd, L"Kill Switch OFF",  660, 464, 140, 30, ID_BTN_KS_OFF);
-    g_btnLeak   = CreateBtn(hWnd, L"DNS Leak Test",    520, 502, 130, 30, ID_BTN_LEAK);
-    g_btnHarden = CreateBtn(hWnd, L"Full Harden",      660, 502, 140, 30, ID_BTN_HARDEN);
+    MakeLabel(hWnd, L"  Privacy Tools", 480, 392, 150, 18, g_hFontBold);
+    g_btnKSOn   = MakeBtn(hWnd, L"Kill Switch ON",   480, 412, 130, 28, ID_BTN_KS_ON);
+    g_btnKSOff  = MakeBtn(hWnd, L"Kill Switch OFF",  618, 412, 140, 28, ID_BTN_KS_OFF);
+    g_btnLeak   = MakeBtn(hWnd, L"DNS Leak Test",    480, 446, 130, 28, ID_BTN_LEAK);
+    g_btnHarden = MakeBtn(hWnd, L"Full Harden",      618, 446, 140, 28, ID_BTN_HARDEN);
+    g_btnReboot = MakeBtn(hWnd, L"Restart PC",       766, 412, 110, 28, ID_BTN_REBOOT);
 
     // Footer
-    HWND foot = CreateWindowW(L"STATIC",
-        L"  UDP 51820 | 10.0.0.0/24 | Auto-refresh 5s",
-        WS_CHILD | WS_VISIBLE, 20, 544, 500, 20, hWnd, 0, g_hInst, 0);
-    SendMessage(foot, WM_SETFONT, (WPARAM)g_hFontSmall, 1);
-}
-
-void DoStart() {
-    WriteAppLog(L"Starting server...");
-    SetWindowTextW(g_lblStatus, L"  STARTING  ");
-    g_refreshing = true;
-    ShellExecuteW(NULL, L"open", L"C:\\Program Files\\WireGuard\\wireguard.exe",
-        L"/installtunnelservice C:\\WireGuard\\wg0.conf", NULL, SW_HIDE);
-    Sleep(2000);
-    g_refreshing = false;
-    DoRefresh();
-}
-
-void DoStop() {
-    WriteAppLog(L"Stopping server...");
-    SetWindowTextW(g_lblStatus, L"  STOPPING  ");
-    g_refreshing = true;
-    ShellExecuteW(NULL, L"open", L"C:\\Program Files\\WireGuard\\wireguard.exe",
-        L"/uninstalltunnelservice wg0", NULL, SW_HIDE);
-    Sleep(2000);
-    g_refreshing = false;
-    DoRefresh();
+    wchar_t footer[256];
+    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.0 | PID %d", GetCurrentProcessId());
+    MakeLabel(hWnd, footer, 16, 486, 600, 18, g_hFontSmall);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-    case WM_CREATE:
+    case WM_CREATE: {
+        GetModuleFileNameW(NULL, g_appDir, MAX_PATH);
+        wchar_t* slash = wcsrchr(g_appDir, L'\\');
+        if (slash) *slash = 0;
         AddControls(hWnd);
+        g_startTick = GetTickCount();
         SetTimer(hWnd, ID_TIMER, 5000, 0);
+        WriteLog("=== GUI v2.0 started ===");
         DoRefresh();
         return 0;
+    }
 
     case WM_TIMER:
         if (wParam == ID_TIMER) DoRefresh();
         return 0;
 
+    case WM_USER + 100: // Background thread done
+        DoRefresh();
+        return 0;
+
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
         case ID_BTN_REFRESH: DoRefresh(); break;
-        case ID_BTN_START:   DoStart(); break;
-        case ID_BTN_STOP:    DoStop(); break;
-        case ID_BTN_ADD:     ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-privacy-addclient.ps1\"",
-            NULL, SW_SHOW); break;
-        case ID_BTN_LOG:     ShellExecuteW(NULL, L"open", L"notepad.exe",
-            L"C:\\WireGuard\\vpn-gui.log", NULL, SW_SHOW); break;
-        case ID_BTN_LVL1:    ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1\" -Level 1",
-            NULL, SW_SHOW); Sleep(3000); DoRefresh(); break;
-        case ID_BTN_LVL2:    ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1\" -Level 2",
-            NULL, SW_SHOW); Sleep(3000); DoRefresh(); break;
-        case ID_BTN_LVL3:    ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1\" -Level 3",
-            NULL, SW_SHOW); Sleep(3000); DoRefresh(); break;
-        case ID_BTN_KS_ON:   ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1\" -Enable",
-            NULL, SW_SHOW); Sleep(2000); DoRefresh(); break;
-        case ID_BTN_KS_OFF:  ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1\" -Disable",
-            NULL, SW_SHOW); Sleep(2000); DoRefresh(); break;
-        case ID_BTN_LEAK:    ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-leaktest.ps1\"",
-            NULL, SW_SHOW); break;
-        case ID_BTN_HARDEN:  ShellExecuteW(NULL, L"open", L"powershell.exe",
-            L"-ExecutionPolicy Bypass -NoProfile -File \"D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-harden.ps1\"",
-            NULL, SW_SHOW); Sleep(3000); DoRefresh(); break;
+        case ID_BTN_START:   RunAsync(1); break;
+        case ID_BTN_STOP:    RunAsync(2); break;
+        case ID_BTN_LVL1:    RunAsync(3); break;
+        case ID_BTN_LVL2:    RunAsync(4); break;
+        case ID_BTN_LVL3:    RunAsync(5); break;
+        case ID_BTN_KS_ON:   RunAsync(6); break;
+        case ID_BTN_KS_OFF:  RunAsync(7); break;
+        case ID_BTN_HARDEN:  RunAsync(8); break;
+        case ID_BTN_LEAK:
+            ShellExecuteW(NULL, L"open", L"powershell.exe",
+                L"-ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-leaktest.ps1'\"",
+                NULL, SW_SHOW);
+            break;
+        case ID_BTN_ADD:
+            ShellExecuteW(NULL, L"open", L"powershell.exe",
+                L"-ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-privacy-addclient.ps1'\"",
+                NULL, SW_SHOW);
+            break;
+        case ID_BTN_LOG:
+            ShellExecuteW(NULL, L"open", L"notepad.exe",
+                (L"\"" + std::wstring(g_appDir) + L"\\vpn-gui.log\"").c_str(), NULL, SW_SHOW);
+            break;
+        case ID_BTN_EXPORT: {
+            wchar_t dst[MAX_PATH];
+            wsprintfW(dst, L"%s\\client-export.conf", g_appDir);
+            CopyFileW(L"C:\\WireGuard\\client0.conf", dst, FALSE);
+            ShellExecuteW(NULL, L"open", L"explorer.exe", g_appDir, NULL, SW_SHOW);
+            break;
+        }
+        case ID_BTN_REBOOT:
+            if (MessageBoxW(hWnd, L"Restart PC?", L"Confirm", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                WriteLog("Rebooting...");
+                ExitWindowsEx(EWX_REBOOT, SHTDN_REASON_MAJOR_APPLICATION);
+            }
+            break;
         }
         return 0;
 
@@ -471,9 +504,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             GetWindowTextW(c, buf, 63);
             if (wcsstr(buf, L"3")) SetTextColor(hdc, RGB(0, 230, 0));
             else if (wcsstr(buf, L"2")) SetTextColor(hdc, RGB(0, 180, 230));
-            else SetTextColor(hdc, RGB(200, 200, 0));
+            else SetTextColor(hdc, RGB(255, 200, 0));
         } else {
-            SetTextColor(hdc, RGB(160, 160, 160));
+            SetTextColor(hdc, RGB(150, 150, 150));
         }
         return (LRESULT)g_hBrushBg;
     }
@@ -483,13 +516,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         HWND c = (HWND)lParam;
         if (c == g_listLog) {
             SetTextColor(hdc, RGB(0, 210, 90));
-            SetBkColor(hdc, RGB(14, 14, 18));
-            static HBRUSH br = CreateSolidBrush(RGB(14, 14, 18));
+            SetBkColor(hdc, RGB(12, 12, 16));
+            static HBRUSH br = CreateSolidBrush(RGB(12, 12, 16));
             return (LRESULT)br;
         }
         SetTextColor(hdc, RGB(190, 190, 190));
-        SetBkColor(hdc, RGB(26, 26, 32));
-        static HBRUSH br2 = CreateSolidBrush(RGB(26, 26, 32));
+        SetBkColor(hdc, RGB(22, 22, 28));
+        static HBRUSH br2 = CreateSolidBrush(RGB(22, 22, 28));
         return (LRESULT)br2;
     }
 
@@ -497,7 +530,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         HDC hdc = (HDC)wParam;
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(220, 220, 220));
-        static HBRUSH br = CreateSolidBrush(RGB(48, 48, 54));
+        static HBRUSH br = CreateSolidBrush(RGB(40, 40, 48));
         return (LRESULT)br;
     }
 
@@ -509,6 +542,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 1;
     }
 
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        mmi->ptMinTrackSize.x = 920;
+        mmi->ptMinTrackSize.y = 530;
+        mmi->ptMaxTrackSize.x = 920;
+        mmi->ptMaxTrackSize.y = 530;
+        return 0;
+    }
+
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER);
         DeleteObject(g_hBrushBg);
@@ -516,6 +558,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         DeleteObject(g_hFontBold);
         DeleteObject(g_hFontMono);
         DeleteObject(g_hFontSmall);
+        WriteLog("=== GUI closed ===");
         PostQuitMessage(0);
         return 0;
     }
@@ -524,7 +567,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     g_hInst = hInst;
-    WriteAppLog(L"GUI started");
+
+    // Single instance check
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"VPN-TEIVRIM-Mutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxW(NULL, L"VPN-TEIVRIM is already running!", L"VPN-TEIVRIM", MB_ICONINFORMATION);
+        return 0;
+    }
 
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
@@ -534,15 +583,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     wc.hInstance = hInst;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(0, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(22, 22, 28));
+    wc.hbrBackground = CreateSolidBrush(RGB(18, 18, 24));
     RegisterClassW(&wc);
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM Monitor",
+    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.0",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        (sw - 920) / 2, (sh - 600) / 2, 920, 600,
+        (sw - 952) / 2, (sh - 530) / 2, 952, 530,
         0, 0, hInst, 0);
 
     ShowWindow(g_hWnd, nShow);
@@ -553,5 +602,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
+
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
     return 0;
 }

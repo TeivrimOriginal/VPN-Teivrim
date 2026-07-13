@@ -114,6 +114,46 @@ std::wstring GetLine(const std::wstring& s, const wchar_t* key) {
     return r;
 }
 
+// Parse size like "1.23 MiB" -> bytes as double
+double ParseSize(const std::wstring& s) {
+    if (s.empty()) return 0;
+    // Extract number
+    size_t numEnd = s.find_first_not_of(L"0123456789.,");
+    if (numEnd == std::wstring::npos) numEnd = s.size();
+    std::wstring numStr = s.substr(0, numEnd);
+    double val = 0;
+    swscanf_s(numStr.c_str(), L"%lf", &val);
+
+    // Find unit
+    size_t unitStart = s.find_first_not_of(L" \t", numEnd);
+    std::wstring unit = (unitStart != std::wstring::npos) ? s.substr(unitStart) : L"";
+    if (unit.find(L"KiB") != std::wstring::npos) val *= 1024.0;
+    else if (unit.find(L"MiB") != std::wstring::npos) val *= 1024.0 * 1024.0;
+    else if (unit.find(L"GiB") != std::wstring::npos) val *= 1024.0 * 1024.0 * 1024.0;
+    else if (unit.find(L"TiB") != std::wstring::npos) val *= 1024.0 * 1024.0 * 1024.0 * 1024.0;
+    else if (unit.find(L"kB") != std::wstring::npos) val *= 1000.0;
+    else if (unit.find(L"MB") != std::wstring::npos) val *= 1000.0 * 1000.0;
+    else if (unit.find(L"GB") != std::wstring::npos) val *= 1000.0 * 1000.0 * 1000.0;
+    return val;
+}
+
+// Format bytes as human-readable string
+std::wstring FormatSize(double bytes) {
+    wchar_t buf[64];
+    if (bytes < 1024.0) {
+        wsprintfW(buf, L"%.0f B", bytes);
+    } else if (bytes < 1024.0 * 1024.0) {
+        wsprintfW(buf, L"%.1f KiB", bytes / 1024.0);
+    } else if (bytes < 1024.0 * 1024.0 * 1024.0) {
+        wsprintfW(buf, L"%.2f MiB", bytes / (1024.0 * 1024.0));
+    } else if (bytes < 1024.0 * 1024.0 * 1024.0 * 1024.0) {
+        wsprintfW(buf, L"%.2f GiB", bytes / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        wsprintfW(buf, L"%.2f TiB", bytes / (1024.0 * 1024.0 * 1024.0 * 1024.0));
+    }
+    return std::wstring(buf);
+}
+
 // --- File operations ---
 std::wstring ReadLog(int maxLines) {
     wchar_t path[MAX_PATH];
@@ -244,13 +284,41 @@ void DoRefresh() {
     wsprintfW(lvlBuf, L"  Level %d", level);
     SetWindowTextW(g_lblLevel, lvlBuf);
 
-    // Traffic stats
-    std::wstring transfer = L"---";
-    size_t trPos = wg.find(L"transfer:");
-    if (trPos != std::wstring::npos) {
-        transfer = GetLine(wg, L"transfer: ");
+    // Traffic stats - sum across all peers
+    std::wstring rxTotal = L"0 B";
+    std::wstring txTotal = L"0 B";
+    {
+        double rxSum = 0, txSum = 0;
+        size_t pp2 = 0;
+        while ((pp2 = wg.find(L"transfer:", pp2)) != std::wstring::npos) {
+            size_t e2 = wg.find(L'\n', pp2);
+            if (e2 == std::wstring::npos) e2 = wg.size();
+            std::wstring line = wg.substr(pp2, e2 - pp2);
+            // Format: "transfer: 1.23 MiB received, 4.56 MiB sent"
+            size_t rxPos = line.find(L"received");
+            size_t sentPos = line.find(L"sent");
+            if (rxPos != std::wstring::npos) {
+                size_t valStart = line.find(L":", pp2) + 1;
+                std::wstring rxStr = line.substr(valStart, rxPos - valStart);
+                rxSum += ParseSize(rxStr);
+            }
+            if (sentPos != std::wstring::npos) {
+                size_t valStart = line.find(L",") + 1;
+                std::wstring txStr = line.substr(valStart, sentPos - valStart);
+                txSum += ParseSize(txStr);
+            }
+            pp2 = e2 + 1;
+        }
+        rxTotal = FormatSize(rxSum);
+        txTotal = FormatSize(txSum);
     }
-    SetWindowTextW(g_lblTraffic, (L"  Traffic: " + transfer).c_str());
+    wchar_t trafficBuf[128];
+    if (on) {
+        wsprintfW(trafficBuf, L"  ↓ %s  ↑ %s", rxTotal.c_str(), txTotal.c_str());
+        SetWindowTextW(g_lblTraffic, trafficBuf);
+    } else {
+        SetWindowTextW(g_lblTraffic, L"  Traffic: сервер выключен");
+    }
 
     // Uptime
     DWORD uptime = (GetTickCount() - g_startTick) / 1000;

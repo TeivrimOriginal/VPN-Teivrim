@@ -36,6 +36,22 @@ int g_currentLevel = 0;
 wchar_t g_appDir[MAX_PATH];
 DWORD g_startTick = 0;
 
+// --- Crash handler ---
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
+    FILE* f = NULL;
+    _wfopen_s(&f, L"C:\\VPN-TEIVRIM\\crash.log", L"a");
+    if (f) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] CRASH code=0x%08X addr=%p\n",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+            ep ? ep->ExceptionRecord->ExceptionCode : 0,
+            ep ? ep->ExceptionRecord->ExceptionAddress : 0);
+        fclose(f);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 // --- Logging ---
 void WriteLog(const char* msg) {
     wchar_t path[MAX_PATH];
@@ -207,10 +223,10 @@ unsigned __stdcall BackgroundThread(void* param) {
     ThreadData* td = (ThreadData*)param;
     switch (td->action) {
     case 1: WriteLog("Starting server...");
-        ExecCmd(L"C:\\Program Files\\WireGuard\\wireguard.exe /installtunnelservice C:\\WireGuard\\wg0.conf", 3000);
+        ExecCmd(L"\"C:\\Program Files\\WireGuard\\wireguard.exe\" /installtunnelservice C:\\WireGuard\\wg0.conf", 3000);
         Sleep(2000); break;
     case 2: WriteLog("Stopping server...");
-        ExecCmd(L"C:\\Program Files\\WireGuard\\wireguard.exe /uninstalltunnelservice wg0", 3000);
+        ExecCmd(L"\"C:\\Program Files\\WireGuard\\wireguard.exe\" /uninstalltunnelservice wg0", 3000);
         Sleep(2000); break;
     case 3: WriteLog("Level 1...");
         ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 1\"", 15000); break;
@@ -298,7 +314,7 @@ void DoRefresh() {
             size_t rxPos = line.find(L"received");
             size_t sentPos = line.find(L"sent");
             if (rxPos != std::wstring::npos) {
-                size_t valStart = line.find(L":", pp2) + 1;
+                size_t valStart = line.find(L":") + 1;
                 std::wstring rxStr = line.substr(valStart, rxPos - valStart);
                 rxSum += ParseSize(rxStr);
             }
@@ -619,11 +635,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     g_hInst = hInst;
+    SetUnhandledExceptionFilter(CrashFilter);
 
-    // Single instance check
+    // Single instance check - silently focus existing window instead of flashing a box
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"VPN-TEIVRIM-Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBoxW(NULL, L"VPN-TEIVRIM is already running!", L"VPN-TEIVRIM", MB_ICONINFORMATION);
+        HWND hExisting = FindWindowW(CLASS_NAME, NULL);
+        if (hExisting) {
+            if (IsIconic(hExisting)) ShowWindow(hExisting, SW_RESTORE);
+            SetForegroundWindow(hExisting);
+        }
         return 0;
     }
 

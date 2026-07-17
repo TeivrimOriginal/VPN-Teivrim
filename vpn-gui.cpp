@@ -36,6 +36,14 @@ int g_currentLevel = 0;
 wchar_t g_appDir[MAX_PATH];
 DWORD g_startTick = 0;
 
+// Speed tracking
+double g_lastRx = 0, g_lastTx = 0;
+DWORD g_lastTick = 0;
+
+// Tray icon
+#define WM_TRAYICON (WM_USER + 1)
+NOTIFYICONDATAW g_nid = {};
+
 // --- Crash handler ---
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
     FILE* f = NULL;
@@ -168,6 +176,11 @@ std::wstring FormatSize(double bytes) {
         wsprintfW(buf, L"%.2f TiB", bytes / (1024.0 * 1024.0 * 1024.0 * 1024.0));
     }
     return std::wstring(buf);
+}
+
+std::wstring FormatSpeed(double bytesPerSec) {
+    if (bytesPerSec < 1.0) return L"0 B/s";
+    return FormatSize(bytesPerSec) + L"/s";
 }
 
 // --- File operations ---
@@ -303,8 +316,8 @@ void DoRefresh() {
     // Traffic stats - sum across all peers
     std::wstring rxTotal = L"0 B";
     std::wstring txTotal = L"0 B";
+    double rxSum = 0, txSum = 0;
     {
-        double rxSum = 0, txSum = 0;
         size_t pp2 = 0;
         while ((pp2 = wg.find(L"transfer:", pp2)) != std::wstring::npos) {
             size_t e2 = wg.find(L'\n', pp2);
@@ -328,11 +341,27 @@ void DoRefresh() {
         rxTotal = FormatSize(rxSum);
         txTotal = FormatSize(txSum);
     }
-    wchar_t trafficBuf[128];
+    wchar_t trafficBuf[256];
     if (on) {
-        wsprintfW(trafficBuf, L"  ↓ %s  ↑ %s", rxTotal.c_str(), txTotal.c_str());
+        // Real-time speed from delta between refreshes
+        DWORD now = GetTickCount();
+        double rxSpeed = 0, txSpeed = 0;
+        double dt = (g_lastTick != 0) ? ((now - g_lastTick) / 1000.0) : 0;
+        if (dt > 0.5) {
+            double dr = rxSum - g_lastRx;
+            double dt2 = txSum - g_lastTx;
+            if (dr < 0) dr = 0;
+            if (dt2 < 0) dt2 = 0;
+            rxSpeed = dr / dt;
+            txSpeed = dt2 / dt;
+        }
+        g_lastRx = rxSum; g_lastTx = txSum; g_lastTick = now;
+        wsprintfW(trafficBuf, L"  ↓ %s (%s)  ↑ %s (%s)",
+            rxTotal.c_str(), FormatSpeed(rxSpeed).c_str(),
+            txTotal.c_str(), FormatSpeed(txSpeed).c_str());
         SetWindowTextW(g_lblTraffic, trafficBuf);
     } else {
+        g_lastRx = 0; g_lastTx = 0; g_lastTick = 0;
         SetWindowTextW(g_lblTraffic, L"  Traffic: сервер выключен");
     }
 
@@ -406,6 +435,37 @@ HWND MakeLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h, HFO
         x, y, w, h, parent, 0, g_hInst, 0);
     SendMessage(lbl, WM_SETFONT, (WPARAM)font, 1);
     return lbl;
+}
+
+// Build a simple 16x16 tray icon (green rounded square)
+HICON MakeTrayIcon() {
+    HDC hdc = GetDC(NULL);
+    HDC mem = CreateCompatibleDC(hdc);
+    HBITMAP hbmColor = CreateCompatibleBitmap(hdc, 16, 16);
+    HBITMAP hOld = (HBITMAP)SelectObject(mem, hbmColor);
+    RECT r = { 0, 0, 16, 16 };
+    FillRect(mem, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    HBRUSH br = CreateSolidBrush(RGB(0, 200, 120));
+    RECT rc = { 2, 2, 14, 14 };
+    FillRect(mem, &rc, br);
+    DeleteObject(br);
+    SelectObject(mem, hOld);
+    DeleteDC(mem);
+
+    HBITMAP hbmMask = CreateBitmap(16, 16, 1, 1, NULL);
+    HDC mem2 = CreateCompatibleDC(hdc);
+    HBITMAP hOld2 = (HBITMAP)SelectObject(mem2, hbmMask);
+    RECT rm = { 0, 0, 16, 16 };
+    FillRect(mem2, &rm, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    SelectObject(mem2, hOld2);
+    DeleteDC(mem2);
+    ReleaseDC(NULL, hdc);
+
+    ICONINFO ii = { TRUE, 0, 0, hbmMask, hbmColor };
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(hbmMask);
+    DeleteObject(hbmColor);
+    return icon;
 }
 
 void AddControls(HWND hWnd) {
@@ -491,7 +551,7 @@ void AddControls(HWND hWnd) {
 
     // Footer
     wchar_t footer[256];
-    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.0 | PID %d", GetCurrentProcessId());
+    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.2.0 | PID %d", GetCurrentProcessId());
     MakeLabel(hWnd, footer, 16, 486, 600, 18, g_hFontSmall);
 }
 
@@ -504,13 +564,54 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         AddControls(hWnd);
         g_startTick = GetTickCount();
         SetTimer(hWnd, ID_TIMER, 5000, 0);
-        WriteLog("=== GUI v2.0 started ===");
+
+        // Tray icon
+        g_nid.cbSize = sizeof(g_nid);
+        g_nid.hWnd = hWnd;
+        g_nid.uID = 1;
+        g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        g_nid.uCallbackMessage = WM_TRAYICON;
+        g_nid.hIcon = MakeTrayIcon();
+        wcscpy_s(g_nid.szTip, L"VPN-TEIVRIM");
+        Shell_NotifyIconW(NIM_ADD, &g_nid);
+
+        WriteLog("=== GUI v2.2.0 started ===");
         DoRefresh();
         return 0;
     }
 
     case WM_TIMER:
         if (wParam == ID_TIMER) DoRefresh();
+        return 0;
+
+    case WM_TRAYICON:
+        if (lParam == WM_LBUTTONDBLCLK || lParam == WM_LBUTTONUP) {
+            ShowWindow(hWnd, SW_RESTORE);
+            SetForegroundWindow(hWnd);
+        } else if (lParam == WM_RBUTTONUP) {
+            POINT pt;
+            GetCursorPos(&pt);
+            HMENU hMenu = CreatePopupMenu();
+            AppendMenuW(hMenu, MF_STRING, 1, L"Показать");
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hMenu, MF_STRING, 2, L"Выход");
+            SetForegroundWindow(hWnd);
+            int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
+            DestroyMenu(hMenu);
+            if (cmd == 1) { ShowWindow(hWnd, SW_RESTORE); SetForegroundWindow(hWnd); }
+            else if (cmd == 2) { PostQuitMessage(0); }
+        }
+        return 0;
+
+    case WM_SYSCOMMAND:
+        if ((wParam & 0xFFF0) == SC_MINIMIZE) {
+            ShowWindow(hWnd, SW_HIDE);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        ShowWindow(hWnd, SW_HIDE);
         return 0;
 
     case WM_USER + 100:
@@ -621,6 +722,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER);
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        if (g_nid.hIcon) DestroyIcon(g_nid.hIcon);
         DeleteObject(g_hBrushBg);
         DeleteObject(g_hFont);
         DeleteObject(g_hFontBold);
@@ -642,7 +745,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND hExisting = FindWindowW(CLASS_NAME, NULL);
         if (hExisting) {
-            if (IsIconic(hExisting)) ShowWindow(hExisting, SW_RESTORE);
+            ShowWindow(hExisting, SW_SHOW);
             SetForegroundWindow(hExisting);
         }
         return 0;
@@ -662,7 +765,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.0",
+    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.2.0",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         (sw - 952) / 2, (sh - 530) / 2, 952, 530,
         0, 0, hInst, 0);

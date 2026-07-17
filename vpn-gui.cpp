@@ -1,4 +1,4 @@
-#ifndef UNICODE
+﻿#ifndef UNICODE
 #define UNICODE
 #endif
 #include <windows.h>
@@ -28,6 +28,7 @@ HWND g_hWnd;
 HWND g_lblStatus, g_lblPort, g_lblKey, g_lblIp, g_lblLevel;
 HWND g_lblTraffic, g_lblUptime;
 HWND g_listPeer, g_listLog;
+int g_selPeer = -1;
 HFONT g_hFont, g_hFontBold, g_hFontMono, g_hFontSmall;
 HBRUSH g_hBrushBg;
 HWND g_btnRefresh, g_btnStart, g_btnStop, g_btnAdd, g_btnLog;
@@ -64,6 +65,7 @@ std::vector<std::wstring> g_peerKeys;
 std::wstring g_removeKey;
 
 // --- Crash handler ---
+#include <psapi.h>
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
     FILE* f = NULL;
     _wfopen_s(&f, L"C:\\VPN-TEIVRIM\\crash.log", L"a");
@@ -74,6 +76,24 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
             ep ? ep->ExceptionRecord->ExceptionCode : 0,
             ep ? ep->ExceptionRecord->ExceptionAddress : 0);
+
+        HANDLE hProc = GetCurrentProcess();
+        void* stack[48];
+        USHORT n = CaptureStackBackTrace(0, 48, stack, NULL);
+        fprintf(f, "StackTrace (%u frames):\n", n);
+        for (USHORT i = 0; i < n; i++) {
+            void* addr = stack[i];
+            MEMORY_BASIC_INFORMATION mbi = {};
+            wchar_t mod[512] = {};
+            if (VirtualQuery(addr, &mbi, sizeof(mbi))) {
+                HMODULE hMod = (HMODULE)mbi.AllocationBase;
+                GetModuleFileNameW(hMod, mod, 512);
+                DWORD64 rva = (DWORD64)addr - (DWORD64)mbi.AllocationBase;
+                fwprintf(f, L"  #%02u %p %ls +0x%llX\n", i, addr, mod, rva);
+            } else {
+                fwprintf(f, L"  #%02u %p\n", i, addr);
+            }
+        }
         fclose(f);
     }
     return EXCEPTION_EXECUTE_HANDLER;
@@ -314,6 +334,7 @@ struct ThreadData {
 
 unsigned __stdcall BackgroundThread(void* param) {
     ThreadData* td = (ThreadData*)param;
+    WriteLogW((L"[bg] action=" + std::to_wstring(td->action)).c_str());
     switch (td->action) {
     case 1: WriteLog("Starting server...");
         ExecCmd(L"\"C:\\Program Files\\WireGuard\\wireguard.exe\" /installtunnelservice C:\\WireGuard\\wg0.conf", 3000);
@@ -371,6 +392,7 @@ unsigned __stdcall BackgroundThread(void* param) {
         break;
     }
     }
+    WriteLogW(L"[bg] done");
     g_refreshing = false;
     delete td;
     return 0;
@@ -386,6 +408,9 @@ void RunAsync(int action) {
 // --- Refresh UI ---
 void DoRefresh() {
     if (g_refreshing) return;
+    // Skip while a modal dialog (MessageBox) owns the UI: a timer tick dispatched
+    // through the modal loop would otherwise run ListView ops on a disabled window.
+    if (!IsWindowEnabled(g_hWnd)) return;
     g_refreshing = true;
     SendMessage(g_hWnd, WM_SETREDRAW, FALSE, 0);
 
@@ -484,14 +509,14 @@ void DoRefresh() {
         if (g_histRx.size() >= MAX_HIST) { g_histRx.erase(g_histRx.begin()); g_histTx.erase(g_histTx.begin()); }
         g_histRx.push_back(rxSpeed);
         g_histTx.push_back(txSpeed);
-        wsprintfW(trafficBuf, L"  ↓ %s (%s)  ↑ %s (%s)",
+        wsprintfW(trafficBuf, L"  в†“ %s (%s)  в†‘ %s (%s)",
             rxTotal.c_str(), FormatSpeed(rxSpeed).c_str(),
             txTotal.c_str(), FormatSpeed(txSpeed).c_str());
         SetWindowTextW(g_lblTraffic, trafficBuf);
     } else {
         g_lastRx = 0; g_lastTx = 0; g_lastTick = 0;
         if (!g_histRx.empty()) { g_histRx.push_back(0); g_histTx.push_back(0); if (g_histRx.size() > MAX_HIST) { g_histRx.erase(g_histRx.begin()); g_histTx.erase(g_histTx.begin()); } }
-        SetWindowTextW(g_lblTraffic, L"  Traffic: сервер выключен");
+        SetWindowTextW(g_lblTraffic, L"  Traffic: СЃРµСЂРІРµСЂ РІС‹РєР»СЋС‡РµРЅ");
     }
 
     // Uptime
@@ -504,7 +529,8 @@ void DoRefresh() {
     SetWindowTextW(g_lblUptime, upBuf);
 
     // Peers
-    ListView_DeleteAllItems(g_listPeer);
+    int prevSel = g_selPeer;
+    SendMessageW(g_listPeer, LB_RESETCONTENT, 0, 0);
     g_peerKeys.clear();
     int idx = 0;
     size_t pp = 0;
@@ -512,24 +538,30 @@ void DoRefresh() {
         size_t pe = wg.find(L"peer:", pp + 1);
         if (pe == std::wstring::npos) pe = wg.size();
         std::wstring blk = wg.substr(pp, pe - pp);
-        std::wstring key = GetLine(blk, L"public key: ");
+        std::wstring key = GetLine(blk, L"peer: ");
         std::wstring ep = GetLine(blk, L"endpoint: ");
         std::wstring hs = GetLine(blk, L"latest handshake: ");
         std::wstring tr = GetLine(blk, L"transfer: ");
         if (!key.empty()) {
             g_peerKeys.push_back(key);
-            if (key.size() > 22) key = key.substr(0, 22) + L"...";
-            LVITEMW li = {};
-            li.mask = LVIF_TEXT;
-            li.iItem = idx;
-            li.pszText = (LPWSTR)key.c_str();
-            ListView_InsertItem(g_listPeer, &li);
-            if (!ep.empty()) ListView_SetItemText(g_listPeer, idx, 1, (LPWSTR)ep.c_str());
-            if (!hs.empty()) ListView_SetItemText(g_listPeer, idx, 2, (LPWSTR)hs.c_str());
-            if (!tr.empty()) ListView_SetItemText(g_listPeer, idx, 3, (LPWSTR)tr.c_str());
+            std::wstring disp = key;
+            if (disp.size() > 24) disp = disp.substr(0, 24) + L"вЂ¦";
+            disp += L"    ";
+            disp += ep.empty() ? L"-" : ep;
+            disp += L"    ";
+            disp += hs.empty() ? L"-" : hs;
+            disp += L"    ";
+            disp += tr.empty() ? L"-" : tr;
+            SendMessageW(g_listPeer, LB_ADDSTRING, 0, (LPARAM)disp.c_str());
             idx++;
         }
         pp = pe;
+    }
+    if (prevSel >= 0 && prevSel < idx) {
+        g_selPeer = prevSel;
+        SendMessageW(g_listPeer, LB_SETCURSEL, prevSel, 0);
+    } else {
+        g_selPeer = -1;
     }
 
     // Log
@@ -626,9 +658,9 @@ std::wstring ReadFileText(const wchar_t* path) {
 
 void WriteFileText(const wchar_t* path, const std::wstring& content) {
     int n = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, 0, 0, NULL, NULL);
-    if (n <= 0) return;
+    if (n <= 1) return;
     std::string utf8(n - 1, 0);
-    WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, &utf8[0], n, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, &utf8[0], n - 1, NULL, NULL);
     FILE* f = NULL;
     _wfopen_s(&f, path, L"wb");
     if (f) { fwrite(utf8.data(), 1, utf8.size(), f); fclose(f); }
@@ -659,7 +691,7 @@ int CountPeers() {
 
 void AppendPeer(const std::wstring& pub, const std::wstring& ip) {
     std::wstring cfg = ReadServerConf();
-    if (cfg.empty()) { WriteLog("wg0.conf пустой — добавление отменено"); return; }
+    if (cfg.empty()) { WriteLog("wg0.conf РїСѓСЃС‚РѕР№ вЂ” РґРѕР±Р°РІР»РµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ"); return; }
     if (!cfg.empty() && cfg.back() != L'\n') cfg += L"\n";
     cfg += L"[Peer]\nPublicKey = " + pub + L"\nAllowedIPs = " + ip + L"/32\n";
     WriteFileText(L"C:\\WireGuard\\wg0.conf", cfg);
@@ -675,7 +707,7 @@ void WriteClientConf(int idx, const std::wstring& priv, const std::wstring& serv
 
 void RemovePeerByKey(const std::wstring& pub) {
     std::wstring cfg = ReadServerConf();
-    if (cfg.empty()) { WriteLog("wg0.conf пустой — удаление отменено"); return; }
+    if (cfg.empty()) { WriteLog("wg0.conf РїСѓСЃС‚РѕР№ вЂ” СѓРґР°Р»РµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ"); return; }
     std::wstring out;
     size_t pos = 0;
     bool first = true;
@@ -750,7 +782,7 @@ void DrawSparkline(HWND hwnd, HDC hdc, const RECT& rc) {
     if (n < 2) {
         SetTextColor(hdc, RGB(120, 120, 120));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, L"нет данных", -1, (RECT*)&rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(hdc, L"РЅРµС‚ РґР°РЅРЅС‹С…", -1, (RECT*)&rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         return;
     }
     double mx = 1.0;
@@ -765,20 +797,22 @@ void DrawSparkline(HWND hwnd, HDC hdc, const RECT& rc) {
 
     // grid baseline
     HPEN grid = CreatePen(PS_SOLID, 1, RGB(40, 44, 54));
-    SelectObject(hdc, grid);
+    HPEN oldPen = (HPEN)SelectObject(hdc, grid);
     MoveToEx(hdc, x0, y0 + h, NULL);
     LineTo(hdc, x0 + w, y0 + h);
+    SelectObject(hdc, oldPen);
     DeleteObject(grid);
 
     auto drawLine = [&](const std::vector<double>& v, COLORREF col) {
         HPEN pen = CreatePen(PS_SOLID, 2, col);
-        SelectObject(hdc, pen);
+        HPEN op = (HPEN)SelectObject(hdc, pen);
         for (int i = 0; i < n; i++) {
             int x = x0 + (int)((double)i / (n - 1) * w);
             int y = y0 + h - (int)(v[i] / mx * h);
             if (i == 0) MoveToEx(hdc, x, y, NULL);
             else LineTo(hdc, x, y);
         }
+        SelectObject(hdc, op);
         DeleteObject(pen);
     };
     drawLine(g_histRx, RGB(0, 220, 120));
@@ -800,7 +834,7 @@ LRESULT CALLBACK QRWndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     case WM_COMMAND:
         if (LOWORD(w) == ID_QR_COPY) {
             CopyTextToClipboard(h, g_qrText);
-            MessageBoxW(h, L"Конфиг скопирован в буфер", L"QR", MB_ICONINFORMATION);
+            MessageBoxW(NULL, L"РљРѕРЅС„РёРі СЃРєРѕРїРёСЂРѕРІР°РЅ РІ Р±СѓС„РµСЂ", L"QR", MB_ICONINFORMATION);
         } else if (LOWORD(w) == ID_QR_CLOSE) {
             DestroyWindow(h);
         }
@@ -818,13 +852,14 @@ LRESULT CALLBACK QRWndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
 void ShowQRDialog(HWND parent, const std::wstring& configPath) {
     std::wstring text = ReadFileText(configPath.c_str());
     if (text.empty()) {
-        MessageBoxW(parent, L"Конфиг клиента не найден", L"QR", MB_ICONERROR);
+        MessageBoxW(NULL, L"РљРѕРЅС„РёРі РєР»РёРµРЅС‚Р° РЅРµ РЅР°Р№РґРµРЅ", L"QR", MB_ICONERROR);
         return;
     }
     g_qrText = text;
     int n = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, 0, 0, NULL, NULL);
+    if (n <= 1) return;
     std::string utf8(n - 1, 0);
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &utf8[0], n, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &utf8[0], n - 1, NULL, NULL);
     if (g_qr) delete g_qr;
     g_qr = new QrCode(QrCode::encodeText(utf8.c_str(), QrCode::Ecc::MEDIUM));
 
@@ -839,13 +874,13 @@ void ShowQRDialog(HWND parent, const std::wstring& configPath) {
         RegisterClassW(&wc);
         reg = true;
     }
-    HWND h = CreateWindowExW(WS_EX_DLGMODALFRAME, L"QRWin", L"QR — отсканируй в WireGuard",
+    HWND h = CreateWindowExW(WS_EX_DLGMODALFRAME, L"QRWin", L"QR вЂ” РѕС‚СЃРєР°РЅРёСЂСѓР№ РІ WireGuard",
         WS_OVERLAPPEDWINDOW, 0, 0, 380, 440, parent, 0, g_hInst, 0);
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     SetWindowPos(h, NULL, (sw - 380) / 2, (sh - 440) / 2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-    CreateWindowW(L"BUTTON", L"Копировать", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+    CreateWindowW(L"BUTTON", L"РљРѕРїРёСЂРѕРІР°С‚СЊ", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         40, 372, 140, 30, h, (HMENU)ID_QR_COPY, g_hInst, 0);
-    CreateWindowW(L"BUTTON", L"Закрыть", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+    CreateWindowW(L"BUTTON", L"Р—Р°РєСЂС‹С‚СЊ", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         200, 372, 140, 30, h, (HMENU)ID_QR_CLOSE, g_hInst, 0);
     ShowWindow(h, SW_SHOW);
 }
@@ -884,19 +919,11 @@ void AddControls(HWND hWnd) {
 
     // Peers
     MakeLabel(hWnd, L"  Connected Peers", 16, 88, 200, 20, g_hFontBold);
-    g_listPeer = CreateWindowExW(LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
-        WC_LISTVIEWW, 0,
-        WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_NOCOLUMNHEADER,
+    g_listPeer = CreateWindowExW(WS_EX_CLIENTEDGE,
+        L"LISTBOX", 0,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
         16, 110, 920, 90, hWnd, (HMENU)ID_LIST_PEER, g_hInst, 0);
     SendMessage(g_listPeer, WM_SETFONT, (WPARAM)g_hFontMono, 1);
-    ListView_SetBkColor(g_listPeer, RGB(22, 22, 28));
-    ListView_SetTextColor(g_listPeer, RGB(200, 200, 200));
-    LVCOLUMNW col = {};
-    col.mask = LVCF_TEXT | LVCF_WIDTH;
-    col.pszText = (LPWSTR)L"Key"; col.cx = 260; ListView_InsertColumn(g_listPeer, 0, &col);
-    col.pszText = (LPWSTR)L"Endpoint"; col.cx = 210; ListView_InsertColumn(g_listPeer, 1, &col);
-    col.pszText = (LPWSTR)L"Handshake"; col.cx = 220; ListView_InsertColumn(g_listPeer, 2, &col);
-    col.pszText = (LPWSTR)L"Transfer"; col.cx = 220; ListView_InsertColumn(g_listPeer, 3, &col);
 
     // Log
     MakeLabel(hWnd, L"  Log", 16, 208, 100, 20, g_hFontBold);
@@ -983,9 +1010,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             POINT pt;
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            AppendMenuW(hMenu, MF_STRING, 1, L"Показать");
+            AppendMenuW(hMenu, MF_STRING, 1, L"РџРѕРєР°Р·Р°С‚СЊ");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hMenu, MF_STRING, 2, L"Выход");
+            AppendMenuW(hMenu, MF_STRING, 2, L"Р’С‹С…РѕРґ");
             SetForegroundWindow(hWnd);
             int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
             DestroyMenu(hMenu);
@@ -1015,6 +1042,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case ID_LIST_PEER:
+            if (HIWORD(wParam) == LBN_SELCHANGE) {
+                int cur = (int)SendMessageW(g_listPeer, LB_GETCURSEL, 0, 0);
+                g_selPeer = (cur != LB_ERR) ? cur : -1;
+            }
+            break;
         case ID_BTN_REFRESH: DoRefresh(); break;
         case ID_BTN_START:   RunAsync(1); break;
         case ID_BTN_STOP:    RunAsync(2); break;
@@ -1033,14 +1066,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RunAsync(9);
             break;
         case ID_BTN_REMOVE: {
-            int sel = (int)SendMessage(g_listPeer, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
+            int sel = g_selPeer;
+            if (sel < 0) sel = (int)SendMessageW(g_listPeer, LB_GETCURSEL, 0, 0);
+            if (sel == LB_ERR) sel = -1;
+            WriteLogW((L"[ui] Remove clicked, sel=" + std::to_wstring(sel) + L" peerKeys=" + std::to_wstring(g_peerKeys.size())).c_str());
             if (sel >= 0 && sel < (int)g_peerKeys.size()) {
-                if (MessageBoxW(hWnd, L"Удалить выбранного клиента?", L"Remove", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                if (MessageBoxW(NULL, L"РЈРґР°Р»РёС‚СЊ РІС‹Р±СЂР°РЅРЅРѕРіРѕ РєР»РёРµРЅС‚Р°?", L"Remove", MB_YESNO | MB_ICONQUESTION) == IDYES) {
                     g_removeKey = g_peerKeys[sel];
+                    g_selPeer = -1;
                     RunAsync(10);
                 }
             } else {
-                MessageBoxW(hWnd, L"Выбери клиента в списке для удаления", L"Remove", MB_ICONINFORMATION);
+                MessageBoxW(NULL, L"Р’С‹Р±РµСЂРё РєР»РёРµРЅС‚Р° РІ СЃРїРёСЃРєРµ РґР»СЏ СѓРґР°Р»РµРЅРёСЏ", L"Remove", MB_ICONINFORMATION);
             }
             break;
         }
@@ -1060,10 +1097,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         case ID_BTN_COPY:
             CopyTextToClipboard(hWnd, ReadFileText(L"C:\\WireGuard\\client0.conf").c_str());
-            MessageBoxW(hWnd, L"Конфиг client0 скопирован в буфер", L"Copy", MB_ICONINFORMATION);
+            MessageBoxW(NULL, L"РљРѕРЅС„РёРі client0 СЃРєРѕРїРёСЂРѕРІР°РЅ РІ Р±СѓС„РµСЂ", L"Copy", MB_ICONINFORMATION);
             break;
         case ID_BTN_REBOOT:
-            if (MessageBoxW(hWnd, L"Restart PC?", L"Confirm", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            if (MessageBoxW(NULL, L"Restart PC?", L"Confirm", MB_YESNO | MB_ICONQUESTION) == IDYES) {
                 WriteLog("Rebooting...");
                 ExitWindowsEx(EWX_REBOOT, SHTDN_REASON_MAJOR_APPLICATION);
             }
@@ -1206,3 +1243,4 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     CloseHandle(hMutex);
     return 0;
 }
+

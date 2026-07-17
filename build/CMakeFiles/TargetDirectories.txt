@@ -1,7 +1,0 @@
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/vpn-gui.dir
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/edit_cache.dir
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/rebuild_cache.dir
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/list_install_components.dir
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/install.dir
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/install/local.dir
-D:/SOOBSHESTVA/VPN/VPN-TEIVRIM/build/CMakeFiles/install/strip.dir

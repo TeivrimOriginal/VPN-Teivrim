@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(VPN-TEIVRIM VERSION 2.2.0 LANGUAGES CXX)
+project(VPN-TEIVRIM VERSION 2.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(vpn-gui WIN32 vpn-gui.cpp)
+add_executable(vpn-gui WIN32 vpn-gui.cpp qrcodegen.cpp)
 
 target_link_libraries(vpn-gui PRIVATE
     comctl32

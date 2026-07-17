@@ -659,6 +659,7 @@ int CountPeers() {
 
 void AppendPeer(const std::wstring& pub, const std::wstring& ip) {
     std::wstring cfg = ReadServerConf();
+    if (cfg.empty()) { WriteLog("wg0.conf пустой — добавление отменено"); return; }
     if (!cfg.empty() && cfg.back() != L'\n') cfg += L"\n";
     cfg += L"[Peer]\nPublicKey = " + pub + L"\nAllowedIPs = " + ip + L"/32\n";
     WriteFileText(L"C:\\WireGuard\\wg0.conf", cfg);
@@ -674,6 +675,7 @@ void WriteClientConf(int idx, const std::wstring& priv, const std::wstring& serv
 
 void RemovePeerByKey(const std::wstring& pub) {
     std::wstring cfg = ReadServerConf();
+    if (cfg.empty()) { WriteLog("wg0.conf пустой — удаление отменено"); return; }
     std::wstring out;
     size_t pos = 0;
     bool first = true;
@@ -1033,8 +1035,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case ID_BTN_REMOVE: {
             int sel = (int)SendMessage(g_listPeer, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
             if (sel >= 0 && sel < (int)g_peerKeys.size()) {
-                g_removeKey = g_peerKeys[sel];
-                RunAsync(10);
+                if (MessageBoxW(hWnd, L"Удалить выбранного клиента?", L"Remove", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    g_removeKey = g_peerKeys[sel];
+                    RunAsync(10);
+                }
             } else {
                 MessageBoxW(hWnd, L"Выбери клиента в списке для удаления", L"Remove", MB_ICONINFORMATION);
             }

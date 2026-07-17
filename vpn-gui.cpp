@@ -29,6 +29,7 @@ HWND g_lblStatus, g_lblPort, g_lblKey, g_lblIp, g_lblLevel;
 HWND g_lblTraffic, g_lblUptime;
 HWND g_listPeer, g_listLog;
 int g_selPeer = -1;
+int g_lastClientIdx = -1;
 HFONT g_hFont, g_hFontBold, g_hFontMono, g_hFontSmall;
 HBRUSH g_hBrushBg;
 HWND g_btnRefresh, g_btnStart, g_btnStop, g_btnAdd, g_btnLog;
@@ -372,9 +373,8 @@ unsigned __stdcall BackgroundThread(void* param) {
         Sleep(1500);
         std::wstring added = L"Client " + std::to_wstring(idx) + L" added, IP " + ip;
         WriteLogW(added.c_str());
-        wchar_t cpath[MAX_PATH];
-        wsprintfW(cpath, L"C:\\WireGuard\\client%d.conf", idx);
-        ShowQRDialog(g_hWnd, cpath);
+        g_lastClientIdx = idx;
+        PostMessageW(g_hWnd, WM_USER + 102, 0, 0);
         PostMessageW(g_hWnd, WM_USER + 100, 0, 0);
         break;
     }
@@ -1038,6 +1038,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_USER + 101:
         UpdateIpLabel();
+        return 0;
+
+    case WM_USER + 102:
+        if (g_lastClientIdx >= 0) {
+            wchar_t cp[MAX_PATH];
+            wsprintfW(cp, L"C:\\WireGuard\\client%d.conf", g_lastClientIdx);
+            ShowQRDialog(g_hWnd, cp);
+        }
         return 0;
 
     case WM_COMMAND:

@@ -93,19 +93,13 @@ $startShortcut.Save()
 Write-Host "  -> Desktop shortcut created" -ForegroundColor Gray
 Write-Host "  -> Start menu shortcut created" -ForegroundColor Gray
 
-# Autostart
+# Autostart (single HKLM Run entry; single-instance in GUI prevents double-launch)
 Write-Host "[6/8] Setting up autostart..." -ForegroundColor Yellow
-$autostartDir = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-$autoShortcut = $shell.CreateShortcut("$autostartDir\VPN-TEIVRIM.lnk")
-$autoShortcut.TargetPath = "$installDir\vpn-gui.exe"
-$autoShortcut.WorkingDirectory = $installDir
-$autoShortcut.WindowStyle = 7
-$autoShortcut.Save()
-
-# Also register in registry
 $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+# Remove any legacy Startup shortcut to avoid a second launch at logon
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\VPN-TEIVRIM.lnk" -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $regPath -Name "VPN-TEIVRIM" -Value "`"$installDir\vpn-gui.exe`"" -Type String -Force
-Write-Host "  -> Autostart enabled (Startup + Registry)" -ForegroundColor Green
+Write-Host "  -> Autostart enabled (Registry Run, single entry)" -ForegroundColor Green
 
 # Firewall rules
 Write-Host "[7/8] Configuring firewall..." -ForegroundColor Yellow

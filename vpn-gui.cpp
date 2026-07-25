@@ -993,7 +993,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         wcscpy_s(g_nid.szTip, L"VPN-TEIVRIM");
         Shell_NotifyIconW(NIM_ADD, &g_nid);
 
-        WriteLog("=== GUI v2.2.0 started ===");
+        WriteLog("=== GUI v2.3.0 started ===");
         DoRefresh();
         return 0;
     }

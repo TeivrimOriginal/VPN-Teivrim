@@ -4,6 +4,8 @@ project(VPN-TEIVRIM VERSION 2.4.2 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CTest)
+
 add_executable(vpn-gui WIN32 vpn-gui.cpp qrcodegen.cpp manifest.rc
     src/exec.cpp
     src/config.cpp
@@ -12,6 +14,10 @@ add_executable(vpn-gui WIN32 vpn-gui.cpp qrcodegen.cpp manifest.rc
     src/privacy.cpp
     src/wizard.cpp
 )
+
+if(BUILD_TESTING)
+    add_test(NAME vpn-gui-self-test COMMAND $<TARGET_FILE:vpn-gui> --self-test)
+endif()
 
 target_include_directories(vpn-gui PRIVATE src)
 

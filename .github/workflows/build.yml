@@ -52,6 +52,10 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "restore-killswitch smoke test failed: $($p.ExitCode)" }
           Write-Host "restore-killswitch smoke test passed"
 
+      - name: CTest
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup -y --no-progress

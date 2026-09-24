@@ -112,11 +112,11 @@ double ParseSize(const std::wstring& s) {
 
 std::wstring FormatSize(double bytes) {
     wchar_t buf[64];
-    if (bytes < 1024.0) wsprintfW(buf, L"%.0f B", bytes);
-    else if (bytes < 1024.0 * 1024.0) wsprintfW(buf, L"%.1f KiB", bytes / 1024.0);
-    else if (bytes < 1024.0 * 1024.0 * 1024.0) wsprintfW(buf, L"%.2f MiB", bytes / (1024.0 * 1024.0));
-    else if (bytes < 1024.0 * 1024.0 * 1024.0 * 1024.0) wsprintfW(buf, L"%.2f GiB", bytes / (1024.0 * 1024.0 * 1024.0));
-    else wsprintfW(buf, L"%.2f TiB", bytes / (1024.0 * 1024.0 * 1024.0 * 1024.0));
+    if (bytes < 1024.0) swprintf_s(buf, L"%.0f B", bytes);
+    else if (bytes < 1024.0 * 1024.0) swprintf_s(buf, L"%.1f KiB", bytes / 1024.0);
+    else if (bytes < 1024.0 * 1024.0 * 1024.0) swprintf_s(buf, L"%.2f MiB", bytes / (1024.0 * 1024.0));
+    else if (bytes < 1024.0 * 1024.0 * 1024.0 * 1024.0) swprintf_s(buf, L"%.2f GiB", bytes / (1024.0 * 1024.0 * 1024.0));
+    else swprintf_s(buf, L"%.2f TiB", bytes / (1024.0 * 1024.0 * 1024.0 * 1024.0));
     return std::wstring(buf);
 }
 

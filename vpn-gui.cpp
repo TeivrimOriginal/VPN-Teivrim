@@ -905,6 +905,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
+static bool RunSelfTest() {
+    bool trim = TrimWS(L"  test  ") == L"test";
+    bool size = FormatSize(1024.0) == L"1.0 KiB";
+    bool speed = FormatSpeed(2048.0) == L"2.0 KiB/s";
+    bool exec = ExecCmd(L"cmd.exe /c echo selftest", 3000).find(L"selftest") != std::wstring::npos;
+    bool qr = false;
+    std::string qrText = "VPN-TEIVRIM";
+    try {
+        QrCode code = QrCode::encodeText(qrText.c_str(), QrCode::Ecc::LOW);
+        qr = code.getSize() > 0;
+    } catch (...) {
+        qr = false;
+    }
+    fwprintf(stderr, L"trim=%d size=%d speed=%d exec=%d qr=%d sizeText=%ls speedText=%ls\n", trim, size, speed, exec, qr, FormatSize(1024.0).c_str(), FormatSpeed(2048.0).c_str());
+    return trim && size && speed && exec && qr;
+}
+
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR cmdLine, int nShow) {
     g_hInst = hInst;
     GetModuleFileNameW(NULL, g_appDir, MAX_PATH);
@@ -913,6 +930,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR cmdLine, int nShow) {
     if (cmdLine && wcsstr(cmdLine, L"--restore-killswitch")) {
         RestoreKillSwitchIfNeeded();
         return 0;
+    }
+    if (cmdLine && wcsstr(cmdLine, L"--self-test")) {
+        return RunSelfTest() ? 0 : 1;
     }
     SetUnhandledExceptionFilter(CrashFilter);
 

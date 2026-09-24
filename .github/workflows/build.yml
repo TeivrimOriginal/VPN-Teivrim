@@ -55,6 +55,12 @@ jobs:
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(VPN-TEIVRIM VERSION ([0-9.]+)').Matches[0].Groups[1].Value
           $zip = "VPN-TEIVRIM-v$ver-win64.zip"
           Compress-Archive -Path build/VPN-TEIVRIM.exe,README.md,vpn-*.ps1,vpn-*.bat,install.bat,uninstall.bat -DestinationPath $zip
+          if (!(Test-Path $zip)) { throw "ZIP was not created" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipItems = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+          try {
+            if (!($zipItems.Entries | Where-Object FullName -eq 'VPN-TEIVRIM.exe')) { throw "VPN-TEIVRIM.exe missing from ZIP" }
+          } finally { $zipItems.Dispose() }
           Write-Host "Created $zip"
           Get-Item $zip | Format-List
 
@@ -62,7 +68,9 @@ jobs:
         shell: pwsh
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
-          Get-Item release/VPN-TEIVRIM-*.exe | Format-List
+          $setup = Get-ChildItem release/VPN-TEIVRIM-*-setup.exe
+          if (!$setup) { throw "Setup.exe was not created" }
+          $setup | Format-List
 
       - uses: actions/upload-artifact@v4
         with:

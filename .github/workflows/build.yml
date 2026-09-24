@@ -2,7 +2,7 @@ name: Build VPN-TEIVRIM
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, drafts ]
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ main, master ]

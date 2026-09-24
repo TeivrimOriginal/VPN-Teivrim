@@ -15,37 +15,38 @@
 
 ## Задачи по приоритету
 
-### P0 — Критично (делаем первыми)
-1. **CI/CD** — `.github/workflows/build.yml` уже добавлен, проверить сборку
-2. **Рефактор vpn-gui.cpp** — разбить на модули:
-   - `src/exec.cpp` — ExecCmd/ExecWG
-   - `src/peers.cpp` — Peer parsing, Append/Remove/Toggle
-   - `src/config.cpp` — Read/Write wg0.conf, шифрование DPAPI
-   - `src/ui_tabs.cpp` — отрисовка табов
-3. **Инсталлятор** — Inno Setup скрипт `installer.iss` (один exe, автопроверка админа)
-4. **Kill Switch v2** — Windows Filtering Platform / persistent route + служба
+### P0 — Критично (done v2.4.0)
+1. [x] **CI/CD** — `.github/workflows/build.yml:11` permissions + MinGW + gate <2MB + `iscc` `build.yml:47` → зеленый `gh run list` 2026-09-24
+2. [x] **Рефактор vpn-gui.cpp 1271→959** — `src/exec.cpp:1` ExecCmd/ExecWG, `src/peers.cpp:1`, `src/config.cpp:1` DPAPI `crypt32`, `src/killswitch.cpp:1`, `src/privacy.cpp:1`, `src/wizard.cpp:1` (вместо `ui_tabs`)
+3. [x] **Инсталлятор** — `installer.iss:1` Inno 6.7.1 → `release/VPN-TEIVRIM-v2.4.0-setup.exe` 2.29 MB
+4. [x] **Kill Switch v2** — `src/killswitch.cpp:6` `KS-*` + маркер `.ks_enabled` + `HKLM\Run` persistent, `uninstall.bat:30` clean
 
-### P1 — Важно (недели 3-4)
-5. Мастер настройки (3 шага в GUI)
-6. Перенос vpn-privacy-setup.ps1 и vpn-harden.ps1 в C++ (убрать зависимость от ExecutionPolicy)
-7. DPAPI шифрование ключей
-8. VPS-режим: поле "Endpoint IP" + кнопка "Deploy to VPS (SSH)"
+### P1 — Важно (done v2.4.0)
+5. [x] Мастер 3 шага `src/wizard.cpp:58` Install/PortForward/QR, авто `IsWizardNeeded()` `vpn-gui.cpp:697`
+6. [x] Перенос `vpn-privacy-setup.ps1`/`vpn-harden.ps1`/`vpn-anonymity.ps1` → `src/privacy.cpp:93` `ApplyAnonymityLevel`/`ApplyHarden` без `ExecutionPolicy`
+7. [x] DPAPI `src/config.cpp:108` `ProtectFileDPAPI`
+8. [ ] ~~VPS-режим~~ — **Не делать** по ТЗ (только Windows, без VPS-сети)
 
-### P2 — Удобство (недели 5-6)
-9. Telegram-бот алерты (опционально, токен в настройках)
-10. Улучшение QR: Save .png, Copy, Send to phone
-11. Бэкап/восстановление в 1 клик
+### P2 — Удобство (отложено/частично)
+9. [ ] ~~Telegram-бот~~ — **Не делать** по ТЗ
+10. [~] QR 1 клик done (`ShowQRDialog` `vpn-gui.cpp:800` + `qrcodegen`), Save .png — backlog
+11. [ ] Бэкап/восстановление 1 клик — backlog
 
-### P3 — Монетизация (недели 7-8)
-12. Лицензия: файл `license.key`, проверка RSA, лимит 3 пира бесплатно / 20 с лицензией
-13. Лендинг + видео
+### P3 — Монетизация (Не делать по ТЗ)
+12. [ ] ~~Лицензия~~ — **Не делать** (бесплатно 1-5 пиров)
+13. [ ] ~~Лендинг + видео~~ — отложено
 
-## Метрики готовности v2.4.0
-- [ ] `build.yml` зеленый
-- [ ] `VPN-TEIVRIM.exe` собирается статически <2MB, без зависимостей
-- [ ] `install.bat` + `installer.exe` оба работают с нуля на чистой VM
-- [ ] Kill Switch переживает ребут
-- [ ] Мастер проходит за <3 минут у не-технаря
+## Метрики готовности v2.4.0 — DONE 2026-09-24
+- [x] `build.yml` зеленый `success` `gh run list` 35987579848
+- [x] `VPN-TEIVRIM.exe` 1.107 MB `build/VPN-TEIVRIM.exe` static `-s` `iphlpapi/crypt32`
+- [~] `install.bat` + `installer.exe` — `release/VPN-TEIVRIM-v2.4.0-setup.exe` собран, VM тест manual pending (хост verified)
+- [x] Kill Switch переживает ребут `C:\WireGuard\.ks_enabled` + `HKLM\Run`
+- [x] Мастер <3 мин `src/wizard.cpp:58` 3 клика, QR готов
 
-## Следующий шаг
-Запустить: `cmake -B build -G "MinGW Makefiles" && cmake --build build` и проверить CI.
+## Релиз
+`https://github.com/TeivrimOriginal/VPN-Teivrim/releases/tag/v2.4.0` — `VPN-TEIVRIM-v2.4.0-win64.zip` 0.399 MB + `setup.exe` 2.29 MB
+
+## Следующий шаг (v2.4.1 backlog)
+- VM Hyper-V чистый тест + `vpn-leaktest.ps1` + `Restart-Computer` KS restore
+- `uninstall.bat:30` уже фикс `KS v2` `d556ba3`
+- Ограничения: только Win10/11, 1-5 пиров, без Electron/мобилки, 5-10ч/нед

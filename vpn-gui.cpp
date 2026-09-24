@@ -8,6 +8,12 @@
 #include <cstdio>
 #include <process.h>
 #include "qrcodegen.hpp"
+#include "exec.h"
+#include "config.h"
+#include "peers.h"
+#include "killswitch.h"
+#include "privacy.h"
+#include "wizard.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -18,7 +24,7 @@ enum {
     ID_LBL_IP, ID_TIMER, ID_BTN_LVL1, ID_BTN_LVL2, ID_BTN_LVL3,
     ID_BTN_KS_ON, ID_BTN_KS_OFF, ID_BTN_LEAK, ID_BTN_HARDEN,
     ID_LBL_LVL, ID_LBL_TRAFFIC, ID_LBL_UPTIME, ID_BTN_REBOOT,
-    ID_BTN_EXPORT, ID_BTN_ABOUT, ID_BTN_QR, ID_BTN_COPY, ID_SPARKLINE, ID_BTN_REMOVE,
+    ID_BTN_EXPORT, ID_BTN_ABOUT, ID_BTN_QR, ID_BTN_COPY, ID_SPARKLINE, ID_BTN_REMOVE, ID_BTN_WIZARD,
     ID_QR_COPY = 9001, ID_QR_CLOSE = 9002
 };
 
@@ -100,99 +106,6 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-// --- Logging ---
-void WriteLog(const char* msg) {
-    wchar_t path[MAX_PATH];
-    wsprintfW(path, L"%s\\vpn-gui.log", g_appDir);
-    FILE* f = NULL;
-    _wfopen_s(&f, path, L"a");
-    if (f) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] %s\n",
-            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, msg);
-        fclose(f);
-    }
-}
-
-void WriteLogW(const wchar_t* msg) {
-    char mb[512] = {};
-    WideCharToMultiByte(CP_UTF8, 0, msg, -1, mb, sizeof(mb), NULL, NULL);
-    WriteLog(mb);
-}
-
-std::wstring GetLine(const std::wstring& s, const wchar_t* key);
-
-// --- Process execution ---
-struct ExecReadCtx {
-    HANDLE hRead;
-    std::wstring* result;
-};
-
-static DWORD WINAPI ExecReadThread(LPVOID p) {
-    ExecReadCtx* ctx = (ExecReadCtx*)p;
-    char tmp[4096];
-    DWORD n = 0;
-    while (ReadFile(ctx->hRead, tmp, sizeof(tmp) - 1, &n, NULL) && n > 0) {
-        tmp[n] = 0;
-        int wl = MultiByteToWideChar(CP_UTF8, 0, tmp, -1, 0, 0);
-        if (wl > 0) {
-            wchar_t* wb = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, wl * sizeof(wchar_t));
-            if (wb) {
-                MultiByteToWideChar(CP_UTF8, 0, tmp, -1, wb, wl);
-                *(ctx->result) += wb;
-                HeapFree(GetProcessHeap(), 0, wb);
-            }
-        }
-    }
-    return 0;
-}
-
-// Timeout-safe: reads child output in a worker thread, waits for the process
-// with a bounded timeout, kills it if it hangs, and closes the pipe so a
-// grandchild inheriting the handle can never block us forever.
-std::wstring ExecCmd(const wchar_t* cmdline, DWORD timeoutMs = 5000) {
-    HANDLE hR, hW;
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    if (!CreatePipe(&hR, &hW, &sa, 0)) return L"";
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdOutput = hW;
-    si.hStdError = hW;
-    wchar_t buf[1024];
-    wcscpy_s(buf, cmdline);
-    PROCESS_INFORMATION pi = {};
-    BOOL ok = CreateProcessW(NULL, buf, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-    CloseHandle(hW);
-    if (!ok) { CloseHandle(hR); return L""; }
-
-    std::wstring result;
-    ExecReadCtx ctx = { hR, &result };
-    HANDLE hThread = CreateThread(NULL, 0, ExecReadThread, &ctx, 0, NULL);
-
-    DWORD wr = WaitForSingleObject(pi.hProcess, timeoutMs);
-    if (wr == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 1);
-
-    // Wait for the reader to drain the pipe. It ends on EOF once the child
-    // closes stdout. Only force-close the read end if the reader is stuck
-    // (e.g. a service inherited the pipe write end and keeps it open).
-    bool readClosed = false;
-    if (hThread) {
-        if (WaitForSingleObject(hThread, timeoutMs + 2000) == WAIT_TIMEOUT) {
-            CloseHandle(hR);
-            readClosed = true;
-            WaitForSingleObject(hThread, 1000);
-        }
-        CloseHandle(hThread);
-    }
-    if (!readClosed) CloseHandle(hR);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return result;
-}
-
 static void UpdateIpLabel() {
     SetWindowTextW(g_lblIp, (L"  LAN: " + g_lanIp + (g_publicIp.empty() ? L"" : (L"  |  WAN: " + g_publicIp))).c_str());
 }
@@ -213,118 +126,6 @@ static DWORD WINAPI FetchPublicIpThread(LPVOID) {
     return 0;
 }
 
-std::wstring ExecWG(const wchar_t* args) {
-    wchar_t cmd[512];
-    wsprintfW(cmd, L"\"C:\\Program Files\\WireGuard\\wg.exe\" %s", args);
-    return ExecCmd(cmd, 3000);
-}
-
-std::wstring GetLine(const std::wstring& s, const wchar_t* key) {
-    size_t p = s.find(key);
-    if (p == std::wstring::npos) return L"";
-    p += wcslen(key);
-    size_t e = s.find(L'\n', p);
-    if (e == std::wstring::npos) e = s.size();
-    std::wstring r = s.substr(p, e - p);
-    while (!r.empty() && (r.back() == L'\r' || r.back() == L' ')) r.pop_back();
-    return r;
-}
-
-// Parse size like "1.23 MiB" -> bytes as double
-double ParseSize(const std::wstring& s) {
-    if (s.empty()) return 0;
-    // Extract number
-    size_t numEnd = s.find_first_not_of(L"0123456789.,");
-    if (numEnd == std::wstring::npos) numEnd = s.size();
-    std::wstring numStr = s.substr(0, numEnd);
-    double val = 0;
-    swscanf_s(numStr.c_str(), L"%lf", &val);
-
-    // Find unit
-    size_t unitStart = s.find_first_not_of(L" \t", numEnd);
-    std::wstring unit = (unitStart != std::wstring::npos) ? s.substr(unitStart) : L"";
-    if (unit.find(L"KiB") != std::wstring::npos) val *= 1024.0;
-    else if (unit.find(L"MiB") != std::wstring::npos) val *= 1024.0 * 1024.0;
-    else if (unit.find(L"GiB") != std::wstring::npos) val *= 1024.0 * 1024.0 * 1024.0;
-    else if (unit.find(L"TiB") != std::wstring::npos) val *= 1024.0 * 1024.0 * 1024.0 * 1024.0;
-    else if (unit.find(L"kB") != std::wstring::npos) val *= 1000.0;
-    else if (unit.find(L"MB") != std::wstring::npos) val *= 1000.0 * 1000.0;
-    else if (unit.find(L"GB") != std::wstring::npos) val *= 1000.0 * 1000.0 * 1000.0;
-    return val;
-}
-
-// Format bytes as human-readable string
-std::wstring FormatSize(double bytes) {
-    wchar_t buf[64];
-    if (bytes < 1024.0) {
-        wsprintfW(buf, L"%.0f B", bytes);
-    } else if (bytes < 1024.0 * 1024.0) {
-        wsprintfW(buf, L"%.1f KiB", bytes / 1024.0);
-    } else if (bytes < 1024.0 * 1024.0 * 1024.0) {
-        wsprintfW(buf, L"%.2f MiB", bytes / (1024.0 * 1024.0));
-    } else if (bytes < 1024.0 * 1024.0 * 1024.0 * 1024.0) {
-        wsprintfW(buf, L"%.2f GiB", bytes / (1024.0 * 1024.0 * 1024.0));
-    } else {
-        wsprintfW(buf, L"%.2f TiB", bytes / (1024.0 * 1024.0 * 1024.0 * 1024.0));
-    }
-    return std::wstring(buf);
-}
-
-std::wstring FormatSpeed(double bytesPerSec) {
-    if (bytesPerSec < 1.0) return L"0 B/s";
-    return FormatSize(bytesPerSec) + L"/s";
-}
-
-// --- File operations ---
-std::wstring ReadLog(int maxLines) {
-    wchar_t path[MAX_PATH];
-    wsprintfW(path, L"%s\\vpn-gui.log", g_appDir);
-    FILE* f = NULL;
-    _wfopen_s(&f, path, L"rb");
-    if (!f) {
-        _wfopen_s(&f, L"C:\\WireGuard\\vpn-monitor.log", L"rb");
-    }
-    if (!f) return L"  (no log)";
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz <= 0) { fclose(f); return L"  (empty)"; }
-    int rs = sz > 16384 ? 16384 : sz;
-    fseek(f, -rs, SEEK_END);
-    char* d = (char*)HeapAlloc(GetProcessHeap(), 0, rs + 1);
-    if (!d) { fclose(f); return L""; }
-    fread(d, 1, rs, f);
-    d[rs] = 0;
-    fclose(f);
-    int wl = MultiByteToWideChar(CP_UTF8, 0, d, -1, 0, 0);
-    wchar_t* wd = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, wl * sizeof(wchar_t));
-    MultiByteToWideChar(CP_UTF8, 0, d, -1, wd, wl);
-    HeapFree(GetProcessHeap(), 0, d);
-    std::wstring content(wd);
-    HeapFree(GetProcessHeap(), 0, wd);
-    std::vector<std::wstring> lines;
-    size_t p = 0;
-    while (p < content.size()) {
-        size_t e = content.find(L'\n', p);
-        if (e == std::wstring::npos) e = content.size();
-        std::wstring l = content.substr(p, e - p);
-        while (!l.empty() && l.back() == L'\r') l.pop_back();
-        if (!l.empty()) lines.push_back(l);
-        p = e + 1;
-    }
-    std::wstring out;
-    int start = ((int)lines.size() > maxLines) ? ((int)lines.size() - maxLines) : 0;
-    for (int i = start; i < (int)lines.size(); i++)
-        out += lines[i] + L"\n";
-    return out;
-}
-
-// Forward declarations
-std::wstring TrimWS(const std::wstring&);
-int CountPeers();
-std::wstring GetServerPubKey();
-void AppendPeer(const std::wstring&, const std::wstring&);
-void WriteClientConf(int, const std::wstring&, const std::wstring&, const std::wstring&, const std::wstring&);
-void RemovePeerByKey(const std::wstring&);
 void ShowQRDialog(HWND, const std::wstring&);
 
 // --- Background thread for long operations ---
@@ -343,18 +144,12 @@ unsigned __stdcall BackgroundThread(void* param) {
     case 2: WriteLog("Stopping server...");
         ExecCmd(L"\"C:\\Program Files\\WireGuard\\wireguard.exe\" /uninstalltunnelservice wg0", 3000);
         Sleep(2000); break;
-    case 3: WriteLog("Level 1...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 1\"", 15000); break;
-    case 4: WriteLog("Level 2...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 2\"", 15000); break;
-    case 5: WriteLog("Level 3...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-anonymity.ps1' -Level 3\"", 15000); break;
-    case 6: WriteLog("Kill switch ON...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Enable\"", 10000); break;
-    case 7: WriteLog("Kill switch OFF...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-killswitch.ps1' -Disable\"", 10000); break;
-    case 8: WriteLog("Full hardening...");
-        ExecCmd(L"powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-harden.ps1'\"", 20000); break;
+    case 3: ApplyAnonymityLevel(1); break;
+    case 4: ApplyAnonymityLevel(2); break;
+    case 5: ApplyAnonymityLevel(3); break;
+    case 6: EnableKillSwitch(); break;
+    case 7: DisableKillSwitch(); break;
+    case 8: ApplyHarden(); break;
     case 9: {
         WriteLog("Adding client...");
         std::wstring priv = TrimWS(ExecCmd(L"\"C:\\Program Files\\WireGuard\\wg.exe\" genkey", 3000));
@@ -633,105 +428,6 @@ HICON MakeTrayIcon() {
     return icon;
 }
 
-// Read a UTF-8 text file fully into a wstring
-std::wstring ReadFileText(const wchar_t* path) {
-    FILE* f = NULL;
-    _wfopen_s(&f, path, L"rb");
-    if (!f) return L"";
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz <= 0) { fclose(f); return L""; }
-    fseek(f, 0, SEEK_SET);
-    char* d = (char*)HeapAlloc(GetProcessHeap(), 0, sz + 1);
-    if (!d) { fclose(f); return L""; }
-    fread(d, 1, sz, f);
-    d[sz] = 0;
-    fclose(f);
-    int wl = MultiByteToWideChar(CP_UTF8, 0, d, -1, 0, 0);
-    wchar_t* wd = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, wl * sizeof(wchar_t));
-    MultiByteToWideChar(CP_UTF8, 0, d, -1, wd, wl);
-    std::wstring out(wd);
-    HeapFree(GetProcessHeap(), 0, d);
-    HeapFree(GetProcessHeap(), 0, wd);
-    return out;
-}
-
-void WriteFileText(const wchar_t* path, const std::wstring& content) {
-    int n = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, 0, 0, NULL, NULL);
-    if (n <= 1) return;
-    std::string utf8(n - 1, 0);
-    WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, &utf8[0], n - 1, NULL, NULL);
-    FILE* f = NULL;
-    _wfopen_s(&f, path, L"wb");
-    if (f) { fwrite(utf8.data(), 1, utf8.size(), f); fclose(f); }
-}
-
-// --- Client management ---
-std::wstring TrimWS(const std::wstring& s) {
-    size_t a = s.find_first_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return L"";
-    size_t b = s.find_last_not_of(L" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
-std::wstring ReadServerConf() {
-    return ReadFileText(L"C:\\WireGuard\\wg0.conf");
-}
-
-std::wstring GetServerPubKey() {
-    return TrimWS(GetLine(ReadServerConf(), L"PublicKey = "));
-}
-
-int CountPeers() {
-    std::wstring cfg = ReadServerConf();
-    int c = 0; size_t p = 0;
-    while ((p = cfg.find(L"[Peer]", p)) != std::wstring::npos) { c++; p++; }
-    return c;
-}
-
-void AppendPeer(const std::wstring& pub, const std::wstring& ip) {
-    std::wstring cfg = ReadServerConf();
-    if (cfg.empty()) { WriteLog("wg0.conf РїСѓСЃС‚РѕР№ вЂ” РґРѕР±Р°РІР»РµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ"); return; }
-    if (!cfg.empty() && cfg.back() != L'\n') cfg += L"\n";
-    cfg += L"[Peer]\nPublicKey = " + pub + L"\nAllowedIPs = " + ip + L"/32\n";
-    WriteFileText(L"C:\\WireGuard\\wg0.conf", cfg);
-}
-
-void WriteClientConf(int idx, const std::wstring& priv, const std::wstring& serverPub,
-                     const std::wstring& wan, const std::wstring& ip) {
-    wchar_t path[MAX_PATH];
-    wsprintfW(path, L"C:\\WireGuard\\client%d.conf", idx);
-    std::wstring cfg = L"[Interface]\nPrivateKey = " + priv + L"\nAddress = " + ip + L"/24\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = " + serverPub + L"\nEndpoint = " + wan + L":51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n";
-    WriteFileText(path, cfg);
-}
-
-void RemovePeerByKey(const std::wstring& pub) {
-    std::wstring cfg = ReadServerConf();
-    if (cfg.empty()) { WriteLog("wg0.conf РїСѓСЃС‚РѕР№ вЂ” СѓРґР°Р»РµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ"); return; }
-    std::wstring out;
-    size_t pos = 0;
-    bool first = true;
-    while (pos < cfg.size()) {
-        size_t nb = cfg.find(L"[", pos);
-        if (nb == std::wstring::npos) break;
-        size_t ne = cfg.find(L"]", nb);
-        if (ne == std::wstring::npos) break;
-        std::wstring blockName = cfg.substr(nb, ne - nb + 1);
-        size_t next = cfg.find(L"[", ne + 1);
-        std::wstring block = cfg.substr(nb, (next == std::wstring::npos ? cfg.size() : next) - nb);
-        if (blockName == L"[Peer]") {
-            std::wstring bp = TrimWS(GetLine(block, L"PublicKey = "));
-            if (bp == pub) { pos = (next == std::wstring::npos ? cfg.size() : next); continue; }
-        }
-        if (!first) out += L"\n";
-        out += block;
-        first = false;
-        if (next == std::wstring::npos) break;
-        pos = next;
-    }
-    WriteFileText(L"C:\\WireGuard\\wg0.conf", out);
-}
-
 void CopyTextToClipboard(HWND h, const std::wstring& text) {
     if (text.empty()) return;
     if (!OpenClipboard(h)) return;
@@ -946,6 +642,7 @@ void AddControls(HWND hWnd) {
     g_btnQr      = MakeBtn(hWnd, L"QR Code",     600, 356, 85, 28, ID_BTN_QR);
     g_btnCopy    = MakeBtn(hWnd, L"Copy",        692, 356, 85, 28, ID_BTN_COPY);
     g_btnRemove  = MakeBtn(hWnd, L"Remove",      784, 356, 85, 28, ID_BTN_REMOVE);
+    MakeBtn(hWnd, L"Мастер",  880, 356, 60, 28, ID_BTN_WIZARD);
 
     // Anonymity
     MakeLabel(hWnd, L"  Anonymity", 16, 392, 150, 18, g_hFontBold);
@@ -968,7 +665,7 @@ void AddControls(HWND hWnd) {
 
     // Footer
     wchar_t footer[256];
-    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.3.0 | PID %d", GetCurrentProcessId());
+    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.4.0 | PID %d", GetCurrentProcessId());
     MakeLabel(hWnd, footer, 16, 588, 600, 18, g_hFontSmall);
 }
 
@@ -993,8 +690,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         wcscpy_s(g_nid.szTip, L"VPN-TEIVRIM");
         Shell_NotifyIconW(NIM_ADD, &g_nid);
 
-        WriteLog("=== GUI v2.3.0 started ===");
+        WriteLog("=== GUI v2.4.0 started ===");
+        RestoreKillSwitchIfNeeded();
         DoRefresh();
+        if (IsWizardNeeded()) {
+            // Показать мастер с задержкой, чтобы окно успело отрисоваться
+            PostMessageW(hWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_WIZARD, 0), 0);
+        }
         return 0;
     }
 
@@ -1065,11 +767,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case ID_BTN_KS_ON:   RunAsync(6); break;
         case ID_BTN_KS_OFF:  RunAsync(7); break;
         case ID_BTN_HARDEN:  RunAsync(8); break;
-        case ID_BTN_LEAK:
-            ShellExecuteW(NULL, L"open", L"powershell.exe",
-                L"-ExecutionPolicy Bypass -NoProfile -Command \"& 'D:\\SOOBSHESTVA\\VPN\\VPN-TEIVRIM\\vpn-leaktest.ps1'\"",
-                NULL, SW_SHOW);
-            break;
+        case ID_BTN_LEAK: {
+            wchar_t leakCmd[MAX_PATH+128]; wsprintfW(leakCmd, L"-ExecutionPolicy Bypass -NoProfile -Command \"& '%s\\vpn-leaktest.ps1'\"", g_appDir);
+            ShellExecuteW(NULL, L"open", L"powershell.exe", leakCmd, NULL, SW_SHOW);
+            } break;
         case ID_BTN_ADD:
             RunAsync(9);
             break;
@@ -1112,6 +813,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 WriteLog("Rebooting...");
                 ExitWindowsEx(EWX_REBOOT, SHTDN_REASON_MAJOR_APPLICATION);
             }
+            break;
+        case ID_BTN_WIZARD:
+            ShowWizard(hWnd);
             break;
         }
         return 0;
@@ -1233,13 +937,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.3.0",
+    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.4.0",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         (sw - 952) / 2, (sh - 604) / 2, 952, 604,
         0, 0, hInst, 0);
 
     ShowWindow(g_hWnd, nShow);
     UpdateWindow(g_hWnd);
+    if (IsWizardNeeded()) ShowWizard(g_hWnd);
 
     MSG m;
     while (GetMessageW(&m, 0, 0, 0)) {

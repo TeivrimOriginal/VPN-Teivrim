@@ -1,7 +1,12 @@
-*.exe
 *.obj
 *.o
 *.log
 build/
+release/*.log
 
+# keep exe only via build artifact, ignore stray exes but allow installer
+*.exe
+!build/VPN-TEIVRIM.exe
+!release/*.exe
 *.zip
+!release/*.zip

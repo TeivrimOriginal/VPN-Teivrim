@@ -665,7 +665,7 @@ void AddControls(HWND hWnd) {
 
     // Footer
     wchar_t footer[256];
-    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.4.1 | PID %d", GetCurrentProcessId());
+    wsprintfW(footer, L"  UDP 51820 | 10.0.0.0/24 | v2.4.2 | PID %d", GetCurrentProcessId());
     MakeLabel(hWnd, footer, 16, 588, 600, 18, g_hFontSmall);
 }
 
@@ -690,7 +690,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         wcscpy_s(g_nid.szTip, L"VPN-TEIVRIM");
         Shell_NotifyIconW(NIM_ADD, &g_nid);
 
-        WriteLog("=== GUI v2.4.1 started ===");
+        WriteLog("=== GUI v2.4.2 started ===");
         RestoreKillSwitchIfNeeded();
         DoRefresh();
         if (IsWizardNeeded()) {
@@ -937,7 +937,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.4.1",
+    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"VPN-TEIVRIM v2.4.2",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         (sw - 952) / 2, (sh - 604) / 2, 952, 604,
         0, 0, hInst, 0);

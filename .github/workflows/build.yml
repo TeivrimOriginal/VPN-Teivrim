@@ -52,7 +52,7 @@ jobs:
       - name: Package ZIP
         shell: pwsh
         run: |
-          $ver = (Select-String -Path CMakeLists.txt -Pattern 'VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(VPN-TEIVRIM VERSION ([0-9.]+)').Matches[0].Groups[1].Value
           $zip = "VPN-TEIVRIM-v$ver-win64.zip"
           Compress-Archive -Path build/VPN-TEIVRIM.exe,README.md,vpn-*.ps1,vpn-*.bat,install.bat,uninstall.bat -DestinationPath $zip
           Write-Host "Created $zip"

@@ -910,6 +910,16 @@ static bool RunSelfTest() {
     bool size = FormatSize(1024.0) == L"1.0 KiB";
     bool speed = FormatSpeed(2048.0) == L"2.0 KiB/s";
     bool exec = ExecCmd(L"cmd.exe /c echo selftest", 3000).find(L"selftest") != std::wstring::npos;
+    bool dpapi = false;
+    wchar_t tempDir[MAX_PATH] = {};
+    wchar_t tempFile[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, tempDir)) {
+        wsprintfW(tempFile, L"%svpn-teivrim-selftest.conf", tempDir);
+        WriteFileText(tempFile, L"[Interface]\r\nPrivateKey = test\r\n");
+        dpapi = ProtectFileDPAPI(tempFile) && IsFileProtected(tempFile) &&
+                UnprotectFileDPAPI(tempFile) && ReadFileText(tempFile).find(L"PrivateKey = test") != std::wstring::npos;
+        DeleteFileW(tempFile);
+    }
     bool qr = false;
     std::string qrText = "VPN-TEIVRIM";
     try {
@@ -918,8 +928,8 @@ static bool RunSelfTest() {
     } catch (...) {
         qr = false;
     }
-    fwprintf(stderr, L"trim=%d size=%d speed=%d exec=%d qr=%d sizeText=%ls speedText=%ls\n", trim, size, speed, exec, qr, FormatSize(1024.0).c_str(), FormatSpeed(2048.0).c_str());
-    return trim && size && speed && exec && qr;
+    fwprintf(stderr, L"trim=%d size=%d speed=%d exec=%d dpapi=%d qr=%d sizeText=%ls speedText=%ls\n", trim, size, speed, exec, dpapi, qr, FormatSize(1024.0).c_str(), FormatSpeed(2048.0).c_str());
+    return trim && size && speed && exec && dpapi && qr;
 }
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR cmdLine, int nShow) {

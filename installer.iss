@@ -1,7 +1,7 @@
 ; VPN-TEIVRIM Inno Setup installer — One-Click (P0 #3)
 ; Requires Inno Setup 6.x
 #define MyAppName "VPN-TEIVRIM"
-#define MyAppVersion "2.4.0"
+#define MyAppVersion "2.4.1"
 #define MyAppPublisher "TEIVRIM"
 #define MyAppExeName "VPN-TEIVRIM.exe"
 

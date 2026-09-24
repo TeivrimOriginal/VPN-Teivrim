@@ -41,6 +41,23 @@ netsh advfirewall firewall delete rule name="L3-KS-Allow-Tun" 2>nul
 netsh advfirewall firewall delete rule name="L3-KS-Allow-Tun-In" 2>nul
 netsh advfirewall firewall delete rule name="L3-KS-Block-Out" 2>nul
 netsh advfirewall firewall delete rule name="L3-KS-Block-In" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-WG" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-WG-In" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-Loop" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-Loop-In" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-LAN" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-LAN-In" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-Tunnel" 2>nul
+netsh advfirewall firewall delete rule name="KS-Allow-Tunnel-In" 2>nul
+netsh advfirewall firewall delete rule name="KS-Block-All" 2>nul
+netsh advfirewall firewall delete rule name="KS-Block-All-In" 2>nul
+netsh advfirewall firewall delete rule name="VPN-KillSwitch-Allow-WireGuard" 2>nul
+netsh advfirewall firewall delete rule name="VPN-KillSwitch-Allow-Loopback" 2>nul
+netsh advfirewall firewall delete rule name="VPN-KillSwitch-Allow-LAN" 2>nul
+netsh advfirewall firewall delete rule name="VPN-KillSwitch-Allow-Tunnel" 2>nul
+netsh advfirewall firewall delete rule name="VPN-KillSwitch-Block-Out" 2>nul
+del "C:\WireGuard\.ks_enabled" 2>nul
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v "VPN-TEIVRIM-KS" /f 2>nul
 
 echo [4/5] Removing install directory...
 rmdir /s /q "C:\VPN-TEIVRIM" 2>nul

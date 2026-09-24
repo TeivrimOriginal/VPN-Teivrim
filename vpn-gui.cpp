@@ -905,8 +905,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR cmdLine, int nShow) {
     g_hInst = hInst;
+    GetModuleFileNameW(NULL, g_appDir, MAX_PATH);
+    wchar_t* appSlash = wcsrchr(g_appDir, L'\\');
+    if (appSlash) *appSlash = 0;
+    if (cmdLine && wcsstr(cmdLine, L"--restore-killswitch")) {
+        RestoreKillSwitchIfNeeded();
+        return 0;
+    }
     SetUnhandledExceptionFilter(CrashFilter);
 
     // Single instance check - silently focus existing window instead of flashing a box.

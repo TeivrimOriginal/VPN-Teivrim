@@ -16,16 +16,12 @@ bool IsKillSwitchEnabled() {
     return out.find(L"KS-Block-All") != std::wstring::npos;
 }
 
-static bool CreateScheduledTask() {
-    // schtasks creates a task that reapplies KS on logon if marker exists
-    // Use schtasks /create /tn VPN-TEIVRIM-KS /tr "netsh ..." /sc onlogon /ru SYSTEM /f
-    // For v2.4 minimal, we just ensure marker + firewall rules are persistent via netsh (already persistent)
-    // and also add Run key for fallback
+static bool CreateKillSwitchTask() {
     HKEY hKey;
     if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        const wchar_t* val = L"cmd.exe /c netsh advfirewall firewall show rule name=\"KS-Block-All\" >nul 2>&1 || netsh advfirewall firewall add rule name=\"KS-Block-All\" dir=out action=block >nul 2>&1";
-        // Only create if KS enabled, otherwise remove
         if (IsKillSwitchEnabled()) {
+            wchar_t val[1024] = {};
+            wsprintfW(val, L"\"%s\\VPN-TEIVRIM.exe\" --restore-killswitch", g_appDir);
             RegSetValueExW(hKey, L"VPN-TEIVRIM-KS", 0, REG_SZ, (BYTE*)val, (DWORD)((wcslen(val)+1)*sizeof(wchar_t)));
         } else {
             RegDeleteValueW(hKey, L"VPN-TEIVRIM-KS");
@@ -54,7 +50,7 @@ bool EnableKillSwitch() {
     ExecCmd(L"cmd.exe /c netsh advfirewall firewall add rule name=\"KS-Block-All-In\" dir=in action=block", 3000);
 
     // Persistent: netsh rules are already persistent; also add Run key
-    CreateScheduledTask();
+    CreateKillSwitchTask();
     WriteLog("Kill Switch v2 enabled");
     return true;
 }
@@ -74,7 +70,7 @@ bool DisableKillSwitch() {
     ExecCmd(L"cmd.exe /c netsh advfirewall firewall delete rule name=\"KS-Block-All\"", 2000);
     ExecCmd(L"cmd.exe /c netsh advfirewall firewall delete rule name=\"KS-Block-All-In\"", 2000);
 
-    CreateScheduledTask();
+    CreateKillSwitchTask();
     WriteLog("Kill Switch v2 disabled");
     return true;
 }
